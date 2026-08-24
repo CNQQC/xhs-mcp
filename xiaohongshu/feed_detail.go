@@ -108,7 +108,12 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	// 使用retry-go处理页面导航和DOM稳定等待
 	err := retry.Do(
 		func() error {
-			page.MustNavigate(url)
+			// 用 Navigate 而不是 MustNavigate：后者失败是 panic，外面这层 retry.Do
+			// 只认 error，捕获不到——于是 retry.Attempts(3) 一直是死代码。线上 8 次
+			// net::ERR_NAME_NOT_RESOLVED（容器 DNS 偶发）一次都没被重试过。
+			if e := page.Navigate(url); e != nil {
+				return e
+			}
 			// 等的是数据就绪，不是页面静止。
 			//
 			// 原先这里是 MustWaitDOMStable：视频笔记播放时 DOM 持续变动，永远等不到静止，

@@ -45,6 +45,20 @@ func softWaitStable(page *rod.Page, what string) {
 	}
 }
 
+// softWaitData 等某段业务数据就绪（通常是 __INITIAL_STATE__ 的某个字段注水完成），
+// 有上限、不 panic。
+//
+// 这是三档里**最该优先用**的一档：等的是结果本身，而不是页面的外观状态。
+//
+// 尤其注意别只等 __INITIAL_STATE__ 这个壳——壳在页面初始化时就存在，具体数据要等接口
+// 回来才填。"软超时 + 只检查壳"会在慢网络下提前放行，让后面一次性的提取拿到空值，
+// 于是报成"没有结果"或"可能未登录"，比 panic 更难排查。传入的 js 必须判到真实的值。
+func softWaitData(page *rod.Page, js string, budget time.Duration, what string) {
+	if err := page.Timeout(budget).Wait(rod.Eval(js)); err != nil {
+		logrus.Warnf("%s：数据未在 %s 内就绪，仍尝试解析", what, budget)
+	}
+}
+
 // softWaitDOMStable 等 DOM 静止，有上限、不 panic。
 func softWaitDOMStable(page *rod.Page, what string) {
 	if err := page.Timeout(softWaitBudget).WaitDOMStable(time.Second, 0); err != nil {

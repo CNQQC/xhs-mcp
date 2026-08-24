@@ -102,7 +102,12 @@ func (n *NotificationAction) UnreadCount(ctx context.Context) (*NotificationCoun
 	softWaitLoad(page, "未读数-explore 页")
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
-	softWaitStable(page, "未读数-explore 页")
+	// 只等页面安静不够：notificationCount 要等接口回来才填，提前放行会让下面一次性的
+	// Eval 拿到空值，报成"可能未登录"——把数据没到位误诊成登录态问题。
+	softWaitData(page, `() => {
+		const s = window.__INITIAL_STATE__;
+		return !!(s && s.notification && s.notification.notificationCount);
+	}`, 10*time.Second, "未读数")
 
 	res, err := page.Eval(`() => {
 		const s = window.__INITIAL_STATE__;

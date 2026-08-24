@@ -62,7 +62,13 @@ func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken s
 
 // extractUserProfileData 从页面中提取用户资料数据的通用方法
 func (u *UserProfileAction) extractUserProfileData(page *rod.Page, tab ProfileTab) (*UserProfileResponse, error) {
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	// 不能只等 __INITIAL_STATE__ 这个壳：壳在页面初始化时就有，userPageData 要等接口
+	// 回来才填。下面的提取是一次性的，拿到空值就直接报错，故这里等到真实数据落地。
+	softWaitData(page, `() => {
+		const u = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.user;
+		const d = u && u.userPageData;
+		return !!(d ? (d.value !== undefined ? d.value : d._value) : null);
+	}`, 15*time.Second, "用户主页数据")
 
 	userDataResult := page.MustEval(`() => {
 		if (window.__INITIAL_STATE__ &&
