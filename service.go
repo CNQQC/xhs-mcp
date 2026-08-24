@@ -143,12 +143,20 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 		b.Close()
 	}
 
+	// 这是唯一一个浏览器要活过函数返回的方法（后台等扫码），所以不能简单 defer 关闭。
+	// 但也不能等确定分支再 defer：FetchQrcodeImage 内部有 Must* 会 panic，那时 deferFunc
+	// 还没挂上，整个浏览器进程组（实测约 300MB）就永久泄漏了，在 1200MB 的容器里
+	// 泄漏两次就够触发一次 OOM。改成默认关闭 + 显式移交。
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			deferFunc()
+		}
+	}()
+
 	loginAction := xiaohongshu.NewLogin(page)
 
 	img, loggedIn, err := loginAction.FetchQrcodeImage(ctx)
-	if err != nil || loggedIn {
-		defer deferFunc()
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +164,9 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	timeout := 4 * time.Minute
 
 	if !loggedIn {
+		// 所有权交给后台 goroutine，由它负责关闭
 		s.waitScanInBackground(loginAction, page, deferFunc, timeout)
+		handedOff = true
 	}
 
 	return &LoginQrcodeResponse{
