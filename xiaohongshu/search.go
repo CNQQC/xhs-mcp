@@ -106,7 +106,13 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 
 	searchURL := makeSearchURL(keyword)
 	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	// 搜索页有懒加载图片、视频预览和无限滚动占位，WaitStable 要求「DOM 零变化 + 网络空闲 + load 完成」
+	// 三者同时成立，实测几乎无法达成，只会一路耗到 60s deadline 后 panic
+	// （容器日志三天内 32 次 search_feeds context deadline exceeded，占全部失败的 54%）。
+	// 真正的就绪条件是下一行的 __INITIAL_STATE__，与 DOM 是否静止无关，故此处超时只告警。
+	if e := page.Timeout(8 * time.Second).WaitStable(300 * time.Millisecond); e != nil {
+		logrus.Warnf("搜索页未在 8s 内稳定（懒加载页面常见），继续解析: %v", e)
+	}
 	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
 	humanize.Delay(ctx, humanize.AfterNavigate)
 

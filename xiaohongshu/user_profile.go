@@ -55,7 +55,7 @@ func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken s
 
 	searchURL := makeUserProfileURL(userID, xsecToken, tab)
 	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	softWaitStable(page, "用户主页")
 
 	return u.extractUserProfileData(page, tab)
 }
@@ -157,7 +157,7 @@ func (u *UserProfileAction) GetMyProfileViaSidebar(ctx context.Context, tab Prof
 	}
 
 	// 等待页面加载完成并获取 __INITIAL_STATE__
-	page.MustWaitStable()
+	softWaitStable(page, "用户主页")
 
 	if err := u.selectTab(ctx, page, tab); err != nil {
 		return nil, err
@@ -188,7 +188,7 @@ func (u *UserProfileAction) selectTab(ctx context.Context, page *rod.Page, tab P
 			return fmt.Errorf("切换到 %s 失败: %w", label, err)
 		}
 		humanize.Delay(ctx, humanize.AfterClick)
-		page.MustWaitStable()
+		softWaitStable(page, "用户主页-切换标签页")
 		return nil
 	}
 	return fmt.Errorf("未找到子 tab %q", label)

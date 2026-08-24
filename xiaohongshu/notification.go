@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
@@ -99,12 +98,11 @@ func NewNotificationAction(page *rod.Page) *NotificationAction {
 func (n *NotificationAction) UnreadCount(ctx context.Context) (*NotificationCount, error) {
 	page := n.page.Timeout(60 * time.Second)
 
-	page.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
+	page.MustNavigate("https://www.xiaohongshu.com/explore")
+	softWaitLoad(page, "未读数-explore 页")
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
-	if err := page.WaitStable(time.Second); err != nil {
-		logrus.Warnf("explore 页未稳定，继续读取未读数: %v", err)
-	}
+	softWaitStable(page, "未读数-explore 页")
 
 	res, err := page.Eval(`() => {
 		const s = window.__INITIAL_STATE__;
@@ -148,7 +146,8 @@ func (n *NotificationAction) List(ctx context.Context, tab NotificationTab, limi
 
 	page := n.page.Timeout(3 * time.Minute)
 
-	page.MustNavigate("https://www.xiaohongshu.com/notification").MustWaitLoad()
+	page.MustNavigate("https://www.xiaohongshu.com/notification")
+	softWaitLoad(page, "通知列表页")
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if err := n.switchTab(ctx, page, tab); err != nil {
