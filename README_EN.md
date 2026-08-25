@@ -1,64 +1,107 @@
-# xiaohongshu-mcp
-
-<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/badge/all_contributors-29-orange.svg?style=flat-square)](#contributors-)
-<!-- ALL-CONTRIBUTORS-BADGE:END -->
-
-[![Philanthropy](https://img.shields.io/badge/Philanthropy-CNY%201810.00-brightgreen?style=flat-square)](./DONATIONS.md)
-[![Gratitude](https://img.shields.io/badge/Gratitude-CNY%201524.64-blue?style=flat-square)](./DONATIONS.md)
-[![Docker Pulls](https://img.shields.io/docker/pulls/xpzouying/xiaohongshu-mcp?style=flat-square&logo=docker)](https://hub.docker.com/r/xpzouying/xiaohongshu-mcp)
+# xhs-mcp
 
 MCP for RedNote (Xiaohongshu) / xiaohongshu.com. Give your AI assistant direct access to RedNote data.
 
-### 🚀 Quick Start: Pick the Version That Fits You
+*[中文版 README](README.md) — the Chinese README carries the full, detailed writeup of every change.*
 
-> [!IMPORTANT]
-> #### 🔥 Option A: Deep Openclaw Integration (recommended for developers)
-> - **Openclaw is on fire 🔥🔥🔥 — Openclaw support has been added in two flavors, pick whichever suits you:**
-> - [xiaohongshu-mcp-skills](https://github.com/autoclaw-cc/xiaohongshu-mcp-skills) (for users who already have this project deployed)
-> - [xiaohongshu-skills](https://github.com/autoclaw-cc/xiaohongshu-skills) (ready to use out of the box)
+> ### This project is derived from [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)
+>
+> **Nearly all of the code, the entire architecture and the product design are the work of the
+> upstream author [@xpzouying](https://github.com/xpzouying) and that project's 29 contributors.**
+> This repository is a set of stability fixes and feature additions on top of upstream **v2.5.0**
+> (commit [`6583124`](https://github.com/xpzouying/xiaohongshu-mcp/commit/6583124), 2026-08-13).
+> It is not a rewrite and not a replacement.
+>
+> **Please star [the upstream repository](https://github.com/xpzouying/xiaohongshu-mcp) first**,
+> and support the original author through
+> [upstream's donation channel](https://github.com/xpzouying/xiaohongshu-mcp#赞赏支持) —
+> where the money received has been [given to charity](https://github.com/xpzouying/xiaohongshu-mcp/blob/main/DONATIONS.md).
+> This repository accepts no donations of any kind.
+>
+> Upstream is licensed under Apache License 2.0; this repository keeps the same license.
+> See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-> [!TIP]
-> #### ✨ Option B: x-mcp Browser Extension (recommended for non-technical users / anyone who wants the simplest setup)
-> - **Don't want to deal with Docker or set up a deployment environment? Try [xpzouying/x-mcp](https://github.com/xpzouying/x-mcp).**
-> - **Zero configuration**: install the extension and it just works — no code, no proxy, no complicated environment setup.
-> - **Safe and stable**: runs directly in your everyday browser (Chrome/Edge) on your local network, with no server IP risk, and it solves 90% of deployment errors.
+## Why this repository exists
 
-### 📖 Related Resources
+The changes below were split by topic into 5 pull requests against upstream
+([#823](https://github.com/xpzouying/xiaohongshu-mcp/pull/823),
+[#824](https://github.com/xpzouying/xiaohongshu-mcp/pull/824),
+[#825](https://github.com/xpzouying/xiaohongshu-mcp/pull/825),
+[#826](https://github.com/xpzouying/xiaohongshu-mcp/pull/826),
+[#827](https://github.com/xpzouying/xiaohongshu-mcp/pull/827)). All of them are still open.
 
-- **My blog article**: [haha.ai/xiaohongshu-mcp](https://www.haha.ai/xiaohongshu-mcp)
-- **Contributing Guide**: [Contributing Guide](./CONTRIBUTING.md)
+An open-source project moves at whatever pace its maintainer sets, and that is entirely normal.
+But these fixes address problems you will hit the moment you run the service in a container —
+timeouts, panics, OOM kills. They work, so they are published here for anyone stuck on the same things.
 
-### 🛠️ Troubleshooting
+**If upstream merges the corresponding PRs, this repository will follow. Once they are all merged,
+it has no reason to exist and will be archived.**
 
-If you run into problems deploying the traditional Docker version, **be sure to check [Common Issues and Solutions (Issues #56)](https://github.com/xpzouying/xiaohongshu-mcp/issues/56) first**.
+## What's different from upstream
 
-> *Tip: if troubleshooting your environment is eating up too much time, switching to the [x-mcp extension](https://github.com/xpzouying/x-mcp) is usually the more efficient choice.*
+Every number below was measured on the same target machine (2 cores / 1200MB container memory limit).
 
-## Star History
+1. **Page waits now have hard upper bounds.** rod's `MustWaitLoad` / `MustWaitStable` /
+   `MustWaitDOMStable` carry no timeout of their own — the only exit is the outer page deadline.
+   RedNote's pages have lazy loading, heartbeat beacons and video playback animation, so
+   "DOM quiet + network idle + load complete" is never satisfied in practice: the call burns the
+   whole deadline and then panics. 12 such sites were found and fixed via a new
+   `xiaohongshu/wait.go`. **59 panics over 3 days → 0.**
 
-<!-- Chart generated weekly onto the star-history data branch by .github/workflows/star-history.yml (star-history.com hosted chart broke due to GitHub API restrictions) -->
-<a href="https://www.star-history.com/#xpzouying/xiaohongshu-mcp&Timeline">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history-dark.svg" />
-    <img alt="Star History Chart" src="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history.svg" />
-  </picture>
-</a>
+   The catch worth knowing: downgrading a hard wait to a soft timeout trades a crash for a
+   *silently wrong answer* unless you also strengthen what comes after it. `wait.go` therefore has a
+   third tier, `softWaitData`, that waits on the business data itself rather than on page appearance.
 
-## Appreciation and Support
+2. **A concurrency gate on browser instances.** There was no concurrency control anywhere in the
+   project: every request spawns a full Chromium process group, so two concurrent requests meant two
+   full browsers pushing the container into OOM — and OOM kills the whole container, not that one
+   request. Measured throughput peaks at 2 concurrent (736MB, 9.2 req/min); 3 buys 5% more
+   throughput for double the latency and leaves only 225MB of headroom. Default is 2, override with
+   `XHS_BROWSER_CONCURRENCY`. Also fixes a browser process-group leak (~300MB each) on the
+   `get_login_qrcode` panic path, and a `retry.Attempts(3)` that had always been dead code
+   (`retry.Do` only catches errors; the body used `MustNavigate`, which panics).
 
-All donations received for this project will be used for charitable giving. For all charitable donation records, please refer to [DONATIONS.md](./DONATIONS.md).
+3. **Security-verification (captcha) detection, plus a one-time verification link.** When RedNote
+   blocks a session, the block page is ordinary HTML — upstream reports it as "no results found",
+   which has nothing to do with the real cause. Now it returns a clear "blocked by RedNote security
+   verification" error, and a new 19th MCP tool `get_verification_qrcode` hands the QR code to the
+   account owner, optionally as a link a phone browser can open directly.
+   The page only relays: the code comes from RedNote and is scanned by the account owner's own app.
+   **Nothing is decoded, recognised or auto-submitted** — there is no captcha bypass here.
 
-**When donating, please note "MCP" and your name.**
-If you need to correct/withdraw your name attribution, please open an Issue or contact via email.
+4. **Video notes return subtitle text.** A model cannot read video frames, but it can read subtitles —
+   they are a transcript of the content. The server downloads the `.srt`, strips timecodes and returns
+   the lines (`VideoDetail.SubtitleText`). Measured: a 166-second video → 1118 characters of transcript.
 
-**Alipay (QR code not displayed):**
+5. **Read paths block image / media / font requests.** The data lives in `__INITIAL_STATE__` anyway.
+   Gains are modest and the original hypothesis (that video playback was the sole source of DOM churn)
+   was disproved by measurement — kept because it does save memory, but it does not solve concurrency.
 
-Donate via Alipay to **xpzouying@gmail.com**.
+6. **Timestamps come with a human-readable form**, so the model doesn't have to convert them itself.
 
-**WeChat:**
+**Net effect**: `get_feed_detail` on a video note went from >115s (worst case 10 minutes) to 10.2s;
+image notes 13.9s → 7.9s; panics over 3 days 59 → 0.
 
-<img src="donate/wechat@2x.png" alt="WeChat Pay QR" width="260" />
+## Installation
+
+**Note**: the `go.mod` module path is deliberately left as upstream's
+`github.com/xpzouying/xiaohongshu-mcp` — renaming it would put a diff in every single file and
+obscure what actually changed. So `go install` will not work for this repository; clone and build:
+
+```bash
+git clone https://github.com/CNQQC/xhs-mcp.git
+cd xhs-mcp
+go build -o xhs-mcp .
+go build -o login ./cmd/login
+```
+
+Everything else — login, configuration, MCP client setup — is identical to upstream and documented
+below. Upstream's [Docker image](https://hub.docker.com/r/xpzouying/xiaohongshu-mcp) does **not**
+contain these changes; `docker build` your own if you want them in a container.
+
+---
+
+The documentation below is inherited from upstream, with only the parts that differ for this repository corrected.
 
 ## Project Overview
 
@@ -329,7 +372,13 @@ Results after about a week
 
 **Method 1: Download Pre-compiled Binaries**
 
-Download pre-compiled binaries for your platform directly from [GitHub Releases](https://github.com/xpzouying/xiaohongshu-mcp/releases):
+> [!WARNING]
+> **This repository does not publish release binaries yet.** The link below points to **upstream's**
+> releases, which do **not** contain any of this repository's changes — they still carry the
+> timeout and OOM problems described above. To get this version, build from source using the
+> [steps above](#installation). The platform list and usage steps are the same either way.
+
+Download pre-compiled binaries for your platform directly from [upstream's GitHub Releases](https://github.com/xpzouying/xiaohongshu-mcp/releases):
 
 **Main Program (MCP Service):**
 
@@ -395,7 +444,7 @@ Using Docker deployment is the simplest method, requiring no development environ
 We provide pre-built Docker images that can be directly pulled from Docker Hub:
 
 ```bash
-# Pull the latest image
+# Pull upstream's latest image (does NOT contain this repository's changes)
 docker pull xpzouying/xiaohongshu-mcp
 ```
 
@@ -407,7 +456,7 @@ We provide a pre-configured `docker-compose.yml` file that can be used directly:
 
 ```bash
 # Download docker-compose.yml
-wget https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/main/docker/docker-compose.yml
+wget https://raw.githubusercontent.com/CNQQC/xhs-mcp/main/docker/docker-compose.yml
 
 # Or if you've already cloned the project, enter the docker directory
 cd docker
@@ -428,7 +477,7 @@ If you need to customize or modify the code, you can build the image yourself:
 
 ```bash
 # Run in project root directory
-docker build -t xpzouying/xiaohongshu-mcp .
+docker build -t xhs-mcp .
 ```
 
 **4. Configuration Notes**
@@ -1032,30 +1081,21 @@ If you do not specifically need OpenClaw, we strongly recommend switching to a c
 
 ## 4. RedNote MCP Community Group
 
-**Important: Before asking questions in the group, please make sure to read the README documentation thoroughly and check Issues first.**
+Upstream runs WeChat and Feishu (Lark) groups. **Get the invite QR codes from the
+[upstream README](https://github.com/xpzouying/xiaohongshu-mcp#4-小红书-mcp-互助群)** — they expire,
+and copying them here would only mislead people. Discussion in those groups is in Chinese.
 
-### WeChat Group
-
-> These are Chinese-language community groups — discussion in the groups is in Chinese.
-
-|                                                 WeChat Group 25                                     |                                                 WeChat Group 26                                      |
-| :------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: |
-| <img src="https://github.com/user-attachments/assets/c4c0f7a0-fc7c-453a-8bb9-890e53a907d4" alt="WechatIMG119" width="300"> | <img src="https://github.com/user-attachments/assets/e9569332-cac5-4e9e-92d8-c1498ef8699b" alt="WechatIMG119" width="300">|
-
-### Feishu (Lark) Groups
-
-|                                                         Feishu Group 2                                                    |                                                         Feishu Group 3                                                    |                                                         Feishu Group 4                                                    |                                                         Feishu Group 5                                                    |
-| :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: |
-| <img src="https://github.com/user-attachments/assets/4983ea42-ce5b-4e26-a8c0-33889093b579" alt="qr-feishu02" width="260"> | <img src="https://github.com/user-attachments/assets/c77b45da-6028-4d3a-b421-ccc6c7210695" alt="qr-feishu03" width="260"> | <img src="https://github.com/user-attachments/assets/c42f5595-71cd-4d9b-b7f8-0c333bd25e2b" alt="qr-feishu04" width="260"> | <img src="https://github.com/user-attachments/assets/c032801c-bf02-4e8e-81ad-fb8471b3d765" alt="qr-feishu05" width="260"> |
-
-> **Note:**
->
-> 1. WeChat group QR codes have a time limit. Sometimes I forget to update them — please wait for an update or submit an Issue to remind me.
-> 2. If a Feishu group is full, try scanning another group's QR code — there's always a spot somewhere.
+Please read the docs and search [Issues](https://github.com/xpzouying/xiaohongshu-mcp/issues) first.
+Note that **those groups belong to upstream and are not responsible for this repository's changes** —
+for anything specific to this fork, open an issue at
+[CNQQC/xhs-mcp](https://github.com/CNQQC/xhs-mcp/issues).
 
 ## 🙏 Thanks to Contributors ✨
 
-Thanks to all friends who have contributed to this project! (In no particular order)
+Below is the contributor list of the **upstream project
+[xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)**. They wrote nearly all of
+the code this repository builds on. The list is reproduced from upstream verbatim, and every link
+points back to the upstream repository. (In no particular order)
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
@@ -1125,8 +1165,21 @@ This project follows the [all-contributors](https://github.com/all-contributors/
 
 ## 📄 License
 
-This project is open source under the [Apache License 2.0](LICENSE).
+This repository is derived from
+[xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp) and is open source as a
+whole under the [Apache License 2.0](LICENSE) — the same license as upstream, with the original
+copyright notice preserved verbatim.
 
-You are free to use, modify and distribute this project, including for commercial purposes, as long as you keep the original copyright notice and license file. The [LICENSE](LICENSE) file is the authoritative source for the full terms.
+You are free to use, modify and distribute it, including for commercial purposes, as long as you keep
+the copyright notice and license file.
 
-Contributions submitted to this project are licensed under the same license by default.
+**About MIT**: the files originally written for this repository (`wait.go`, `browser_lease.go`,
+`subtitle.go`, `risk.go`, `verification.go`, `verify_link.go` and others — the full list is in
+[NOTICE](NOTICE)) are **additionally** offered under the [MIT license](LICENSE-MIT), so another
+project can lift a single file out cleanly. Used or distributed together with the rest of this
+repository, the whole remains governed by Apache-2.0 — the dual license only matters when those
+files are taken on their own.
+
+The list of modified upstream files is recorded in [NOTICE](NOTICE), per Apache-2.0 section 4(b).
+
+Contributions submitted to this repository are licensed under Apache-2.0 by default.

@@ -1,8 +1,9 @@
 services:
   xiaohongshu-mcp:
-    # Docker Hub 镜像（默认）
-    image: xpzouying/xiaohongshu-mcp
-    # 阿里云镜像源（国内用户推荐，拉取更快）
+    # 本仓库没有发布镜像，先在项目根目录 `docker build -t xhs-mcp .` 构建
+    image: xhs-mcp
+    # 下面两个是上游的镜像，不含本仓库的改动，仅在你想跑原版时才取消注释
+    # image: xpzouying/xiaohongshu-mcp
     # image: crpi-hocnvtkomt7w9v8t.cn-beijing.personal.cr.aliyuncs.com/xpzouying/xiaohongshu-mcp
     container_name: xiaohongshu-mcp
     restart: unless-stopped

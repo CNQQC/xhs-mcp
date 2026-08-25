@@ -1,0 +1,70 @@
+xhs-mcp
+Copyright 2026 CNQQC
+
+本项目是 xiaohongshu-mcp 的衍生作品（Derivative Work）：
+
+    https://github.com/xpzouying/xiaohongshu-mcp
+    Copyright 2025 xpzouying and contributors
+    Licensed under the Apache License, Version 2.0
+
+上游基线为 v2.5.0（commit 6583124，2026-08-13）。原始的 Apache License 2.0
+全文见本仓库 LICENSE 文件，整个仓库以该协议分发。
+
+================================================================================
+按 Apache-2.0 第 4(b) 条声明修改
+================================================================================
+
+以下上游文件被本项目修改过：
+
+    README.md
+    docs/API.md
+    errors/errors.go
+    handlers_api.go
+    login_session.go
+    mcp_handlers.go
+    mcp_server.go
+    routes.go
+    routes_test.go
+    service.go
+    xiaohongshu/comment_feed.go
+    xiaohongshu/feed_detail.go
+    xiaohongshu/feeds.go
+    xiaohongshu/like_favorite.go
+    xiaohongshu/login.go
+    xiaohongshu/navigate.go
+    xiaohongshu/notification.go
+    xiaohongshu/notification_like.go
+    xiaohongshu/notification_reply.go
+    xiaohongshu/search.go
+    xiaohongshu/types.go
+    xiaohongshu/user_profile.go
+
+修改内容按主题分组，逐条对应的技术说明见 README.md「相对上游的改动」一节；
+逐行差异见各 merge commit 的提交信息。
+
+================================================================================
+本项目新增的原创文件
+================================================================================
+
+以下文件为本项目原创，不含上游代码。它们在 Apache-2.0 之外，同时以 MIT 协议
+授权（见 LICENSE-MIT），可在满足其中任一协议的前提下单独取用：
+
+    browser_lease.go
+    browser_lease_test.go
+    mcp_handlers_test.go
+    verify_link.go
+    verify_link_test.go
+    verify_page.go
+    xiaohongshu/resource_block.go
+    xiaohongshu/risk.go
+    xiaohongshu/risk_test.go
+    xiaohongshu/subtitle.go
+    xiaohongshu/timefmt.go
+    xiaohongshu/timefmt_test.go
+    xiaohongshu/verification.go
+    xiaohongshu/verification_browser_test.go
+    xiaohongshu/verification_live_test.go
+    xiaohongshu/wait.go
+
+注意：把上述文件与本仓库其余部分一并使用或分发时，整体仍受 Apache-2.0 约束——
+双许可只在这些文件被单独取出时才有意义。

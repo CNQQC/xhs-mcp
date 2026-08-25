@@ -1,64 +1,187 @@
-# xiaohongshu-mcp
-
-<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/badge/all_contributors-29-orange.svg?style=flat-square)](#contributors-)
-<!-- ALL-CONTRIBUTORS-BADGE:END -->
-
-[![善款已捐](https://img.shields.io/badge/善款已捐-CNY%201810.00-brightgreen?style=flat-square)](./DONATIONS.md)
-[![爱心汇聚](https://img.shields.io/badge/爱心汇聚-CNY%201524.64-blue?style=flat-square)](./DONATIONS.md)
-[![Docker Pulls](https://img.shields.io/docker/pulls/xpzouying/xiaohongshu-mcp?style=flat-square&logo=docker)](https://hub.docker.com/r/xpzouying/xiaohongshu-mcp)
+# xhs-mcp
 
 MCP for 小红书 / xiaohongshu.com。让你的 AI 助手直接访问小红书数据。
 
-### 🚀 快速开始：选择最适合你的版本
+> ### 本项目衍生自 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)
+>
+> **绝大部分代码、全部核心架构和产品设计都出自上游作者 [@xpzouying](https://github.com/xpzouying)
+> 与该项目 29 位贡献者之手。** 本仓库是在上游 **v2.5.0**（commit
+> [`6583124`](https://github.com/xpzouying/xiaohongshu-mcp/commit/6583124)，2026-08-13）
+> 基线上做的一批稳定性修复与功能增补，不是重写，也不是替代品。
+>
+> **要用请先去[上游仓库](https://github.com/xpzouying/xiaohongshu-mcp)点 Star**，
+> 也请通过上游的[赞赏渠道](https://github.com/xpzouying/xiaohongshu-mcp#赞赏支持)支持原作者
+> —— 那里已经把收到的[善款捐了出去](https://github.com/xpzouying/xiaohongshu-mcp/blob/main/DONATIONS.md)。
+> 本仓库不接受任何形式的赞赏。
+>
+> 上游以 Apache License 2.0 授权，本仓库沿用同一协议，见 [LICENSE](LICENSE)、[NOTICE](NOTICE)。
 
-> [!IMPORTANT]
-> #### 🔥 方案 A：Openclaw 深度集成 (推荐给开发者)
-> - **Openclaw 太火啦 🔥🔥🔥 ，新增 Openclaw 支持，分为两种，请各位按需使用：**
-> - [xiaohongshu-mcp-skills](https://github.com/autoclaw-cc/xiaohongshu-mcp-skills)（适用于已部署完本项目的用户）
-> - [xiaohongshu-skills](https://github.com/autoclaw-cc/xiaohongshu-skills)（开箱即用版）
+## 为什么会有这个仓库
 
-> [!TIP]
-> #### ✨ 方案 B：x-mcp 浏览器插件版 (推荐给非技术同学 / 追求极简的用户)
-> - **不想折腾 Docker 或部署环境？试试：[xpzouying/x-mcp](https://github.com/xpzouying/x-mcp)**
-> - **零配置**：安装插件即用，无需任何代码、代理或复杂的环境配置。
-> - **安全稳定**：直接在常用浏览器 (Chrome/Edge) 及本地网络运行，无服务器 IP 风险，且能解决 90% 的部署报错。
+下面这些改动已经按主题拆成 5 个 PR 提给上游（[#823](https://github.com/xpzouying/xiaohongshu-mcp/pull/823)、
+[#824](https://github.com/xpzouying/xiaohongshu-mcp/pull/824)、
+[#825](https://github.com/xpzouying/xiaohongshu-mcp/pull/825)、
+[#826](https://github.com/xpzouying/xiaohongshu-mcp/pull/826)、
+[#827](https://github.com/xpzouying/xiaohongshu-mcp/pull/827)），目前还都开着。
 
-### 📖 相关资源
+开源项目的维护节奏由维护者定，这很正常。但这些修复解决的是把服务放在容器里跑就会撞上的问题
+（超时、panic、OOM），自己用着有效，就先在这里公开出来，给同样卡在这些问题上的人一条现成的路。
 
-- **我的博客文章**：[haha.ai/xiaohongshu-mcp](https://www.haha.ai/xiaohongshu-mcp)
-- **贡献指南**：[Contributing Guide](./CONTRIBUTING.md)
+**上游一旦合并对应的 PR，本仓库会同步跟进；全部合并后就没有继续存在的必要，届时归档。**
 
-### 🛠️ 疑难杂症
+## 相对上游的改动
 
-如果您在部署传统 Docker 版本时遇到问题，**务必先查看：[各种疑难杂症 (Issues #56)](https://github.com/xpzouying/xiaohongshu-mcp/issues/56)**。
+改动都基于同一台目标机器（2 核 / 容器内存上限 1200MB）的实测，下面的数字都是实际量出来的，
+不是估算。
 
-> *提示：如果环境排查太耗时，切换到 [x-mcp 插件版](https://github.com/xpzouying/x-mcp) 通常是更高效的选择。*
+### 1. 页面等待一律给上限，不再吃满 deadline 再 panic
 
-## Star History
+rod 的 `MustWaitLoad` / `MustWaitStable` / `MustWaitDOMStable` **自身不带超时上限**
+（官方注释写明 "d is not the max wait timeout"），唯一的退出路径是外层 page deadline。
+而小红书的页面有懒加载、心跳信标、视频播放动画，「DOM 零变化 + 网络空闲 + load 完成」
+这个条件实测根本达不成——于是只能一路耗到 deadline 然后 panic。
 
-<!-- 图表由 .github/workflows/star-history.yml 每周生成到 star-history 数据分支（star-history.com 托管图表因 GitHub API 限制已失效） -->
-<a href="https://www.star-history.com/#xpzouying/xiaohongshu-mcp&Timeline">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history-dark.svg" />
-    <img alt="Star History Chart" src="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history.svg" />
-  </picture>
-</a>
+全仓库审计出 12 处同类隐患，其中最狠的几处：
 
-## 赞赏支持
+| 位置 | 后果 |
+|---|---|
+| `comment_feed.go:33` | 视频笔记发评论**必定**卡满 60s 后 panic，一条都发不出去 |
+| `feed_detail.go` | 视频笔记详情 deadline 是 10 分钟，一路耗满 |
+| `login.go:82/99` | `Context(ctx)` 只换 context 没设 Timeout，**完全没有上限** |
 
-本项目所有的赞赏都会用于慈善捐赠。所有的慈善捐赠记录，请参考 [DONATIONS.md](./DONATIONS.md)。
+新增 `xiaohongshu/wait.go` 立两条规矩：「等页面安静」一律是尽力而为的缓冲（8 秒上限、
+超时只告警继续）；真正的就绪条件永远是后面那句具体的元素查找或数据判断。
 
-**捐赠时，请备注 MCP 以及名字。**
-如需更正/撤回署名，请开 Issue 或通过邮箱联系。
+**这里有个配套的坑**：把硬等降级成软超时，会用假阴性换掉 panic。原来的 `MustWaitStable()`
+虽然会 panic，但它一旦成功、数据必然到位；换成软超时后，后面那句就绪判断就成了唯一防线。
+而当时搜索路径后面跟的是 `MustWait(() => window.__INITIAL_STATE__ !== undefined)`——
+**这只检查壳**，壳在页面初始化时就存在，`search.feeds` 要等接口回来才填。慢网络下软超时放行、
+壳检查立即通过、提取拿到空值就直接报「没搜到结果」，比 panic 更难排查。所以 `wait.go` 补了
+第三档 `softWaitData`，等的是业务数据本身而不是页面外观。
 
-**支付宝（不展示二维码）：**
+> **规矩：软超时和强就绪条件必须成对出现。** 只放宽等待、不加强判据，等于把崩溃换成了
+> 静默的错误答案。
 
-通过支付宝向 **xpzouying@gmail.com** 赞赏。
+云端容器连续运行 3 天的对照：**59 次 panic → 0 次**。
 
-**微信：**
+### 2. 浏览器并发闸门（此前全项目零并发控制）
 
-<img src="donate/wechat@2x.png" alt="WeChat Pay QR" width="260" />
+18 个 MCP 工具和 20 条 REST 端点共用一个 service 单例，每个业务方法独立 `newBrowser()`，
+net/http 一请求一 goroutine——**两个请求撞上就是两套完整 Chromium**，一起把容器推向 OOM。
+而 OOM 杀掉的是整个容器，不是那一个请求。
+
+实测（空闲基线 237MB）：
+
+| 并发 | 峰值内存 | 单请求耗时 | 吞吐 | 余量 |
+|---|---|---|---|---|
+| 1 | 528 MB | 9.3s | 6.5 次/分 | 672 MB |
+| **2** | **736 MB** | **13s** | **9.2 次/分** | **464 MB** ← 取这个 |
+| 3 | 975 MB | 18.5s | 9.7 次/分 | 225 MB |
+
+取 N=2：吞吐已达峰值 95%，3 只多 5%（2 核已在争抢 CPU）却让延迟翻倍、余量掉到 225MB，
+而评论多的详情页能轻松吃掉这点余量。`XHS_BROWSER_CONCURRENCY` 可覆盖，换机器要重新实测。
+
+实现是零侵入的：19 个调用点在 browser 上只用了 `Close()` 和 `NewPage()`（已逐个核对），
+于是让 `newBrowser()` 返回内嵌 `*headless_browser.Browser` 的 `leasedBrowser`——`NewPage`
+靠 Go 的方法提升透传，只有 `Close` 被拦下来归还名额，**19 个调用点一处都不用改**。
+
+> **量容器内存只能读 cgroup 的 `memory.current`**（与 `docker stats` 一致），不能把
+> 多个 chrome 进程的 `ps` RSS 相加——后者会把进程间共享的二进制映射和 zygote 的 CoW 页
+> 重复计算，实测高估 88%（996MB vs 528MB），照那个数字算会误判成「并发上限只能是 1」。
+
+顺带修掉 `get_login_qrcode` 的浏览器泄漏：它是唯一一个浏览器要活过函数返回的方法，
+所以 `deferFunc` 是拿到结果**之后**才按分支挂上的。可 `FetchQrcodeImage` 内部的 `Must*`
+会 panic——那时 deferFunc 还没挂，整个浏览器进程组（约 300MB）永久泄漏，
+在 1200MB 的容器里漏两次就够触发一次 OOM。改成默认关闭 + 显式移交。
+
+以及 `feed_detail` 的 `retry.Attempts(3)` 一直是死代码：`retry.Do` 只认 error，
+而里面写的是 `page.MustNavigate(url)`——失败是 **panic**，retry 根本捕获不到。
+线上 8 次 `net::ERR_NAME_NOT_RESOLVED` 一次都没被重试过。改用返回 error 的
+`page.Navigate(url)`，retry 才真正生效。
+
+### 3. 识别安全验证，并把二维码递到账号本人手上
+
+被小红书安全验证拦截时，拦截页也是一张正常的 HTML，读不到 `__INITIAL_STATE__` 就一路走到
+「没搜到结果」——报出来的原因跟真实原因毫无关系，人只能靠猜。
+
+- **识别**：判定只认 URL 里的 `/website-login/captcha` 这一段。`verifyUuid` 每次访问都不同、
+  `redirectPath` 随来源页而变，而「安全验证」这类页面文案是站点随时能改的本地化字符串，
+  只配写进错误消息，不配当触发条件。
+- **取码**：新增第 19 个 MCP 工具 `get_verification_qrcode`，把服务端 headless 会话里的
+  那张码原样搬出来给账号本人扫。
+- **一次性验证链接**：二维码透进对话里，只有人坐在电脑前才好使。再发一条手机浏览器能直接打开的
+  网页——一张大二维码、过期自动换新、验证一通过就显示结果。
+
+网页只做搬运：码是小红书发的，扫的是账号本人的 App，**不解码、不识别、不自动提交**，
+不含任何绕过验证的手段。
+
+`/verify/*` 这条路由故意放在 Bearer 鉴权之外（手机浏览器发不了 `Authorization` 头），
+所以路径里那个 32 字节随机 token 就是唯一凭证。相应地：15 分钟 TTL、常数时间比较、
+**不写进访问日志**（gin 的 Logger 会把完整路径落盘，照写等于把凭证随日志采集流到别处）、
+页面不引任何外部资源。公网地址服务端猜不到，用 `XHS_PUBLIC_BASE_URL` 告诉它。
+
+### 4. 视频笔记返回字幕正文
+
+视频画面大模型读不了，但字幕能读——它就是视频内容的文字转录。字幕 URL 本来就在
+`__INITIAL_STATE__` 里，只是正文要另外下载 `.srt`，且链接带签名有时效，客户端拿到也取不动。
+改成服务端下载好、去掉时间轴、直接把台词交出去（`VideoDetail.SubtitleText`）。
+
+实测：一条 166 秒的视频 → 47 条字幕 / 1118 字完整中文转录，下载耗时 0.23s。
+
+### 5. 读取类流程拦掉图片 / 音视频 / 字体请求
+
+数据都在 `__INITIAL_STATE__` 里，封面图不必真的下载解码。
+
+需要说明的是**收益有限**：原以为「视频播放是 DOM 抖动的唯一来源」，实测证伪——拦截后 DOM
+仍不稳定，小红书视频很可能走 MSE，分片请求类型是 XHR 而非 Media，按类型拦不到。
+保留是因为确实省了内存，但别指望它解决并发问题。
+
+### 6. 时间戳给成人能读的格式
+
+笔记、评论、通知此前只给裸的毫秒时间戳，模型要自己换算，经常算错年份。补上可读时间。
+
+### 效果汇总
+
+同一条视频笔记、同一个关键词，补丁全部部署后的对照：
+
+| 调用 | 上游 | 本仓库 | |
+|---|---|---|---|
+| `get_feed_detail`（视频） | **>115s 未返回，最坏 10 分钟** | **10.2s** | −91% |
+| `get_feed_detail`（图文） | 13.9s | 7.9s | −43% |
+| `search_feeds` | 11.1s | 9.1s | −18% |
+| 视频字幕 | 无 | **1118 字可读文本** | 新增 |
+| 3 天内 panic 次数 | 59 | **0** | |
+
+并发闸门实测（同时发 4 个请求）：全部成功，耗时分成 14.4/15.5s 与 26.5/26.6s 两批，
+峰值 777MB，0 panic、无 OOM。
+
+### 还没做的
+
+**浏览器复用**（能省掉每次约 5 秒的冷启动）需要先处理两件事：`rod.Page.Close()` 持
+Browser 级全局锁 `targetsLock`（可改用 `proto.TargetCloseTarget` 绕开），以及登录流程会
+`Close()` 掉共享浏览器（要改成只关 page）。指纹方面没有障碍：seed 是启动 flag 且已全局钉死，
+复用与否指纹一致。
+
+## 安装
+
+**注意**：`go.mod` 的模块路径保持上游的 `github.com/xpzouying/xiaohongshu-mcp` 未改
+（改了会让每一个文件都产生 diff，反而看不清改了什么），所以 `go install` 装不了本仓库，
+只能 clone 后构建：
+
+```bash
+git clone https://github.com/CNQQC/xhs-mcp.git
+cd xhs-mcp
+go build -o xhs-mcp .
+go build -o login ./cmd/login
+```
+
+其余安装方式、登录、配置、MCP 客户端接入的步骤与上游完全一致，见下文。上游的
+[Docker 镜像](https://hub.docker.com/r/xpzouying/xiaohongshu-mcp)不含本仓库的改动，
+要用容器请自行 `docker build`。
+
+---
+
+以下文档承自上游，仅修正了与本仓库有出入的地方。
 
 ## 项目简介
 
@@ -329,7 +452,14 @@ https://github.com/user-attachments/assets/cc385b6c-422c-489b-a5fc-63e92c695b80
 
 **方式一：下载预编译二进制文件**
 
-直接从 [GitHub Releases](https://github.com/xpzouying/xiaohongshu-mcp/releases) 下载对应平台的二进制文件：
+> [!WARNING]
+> **本仓库暂未提供 Releases 二进制。** 下面这个链接是**上游**的 Releases，
+> 那里的二进制**不含本仓库的任何改动**——它会带着上游那些超时和 OOM 问题。
+> 想要本仓库的版本，请用[上面的构建步骤](#安装)自行编译。
+>
+> 平台清单和使用步骤上下游一致，保留在这里供参考。
+
+直接从[上游 GitHub Releases](https://github.com/xpzouying/xiaohongshu-mcp/releases) 下载对应平台的二进制文件：
 
 **主程序（MCP 服务）：**
 
@@ -390,12 +520,14 @@ go env -w  GOPROXY=https://goproxy.io,direct
 
 使用 Docker 部署是最简单的方式，无需安装任何开发环境。
 
-**1. 从 Docker Hub 拉取镜像（推荐）**
+**1. 从 Docker Hub 拉取镜像**
 
-我们提供了预构建的 Docker 镜像，可以直接从 Docker Hub 拉取使用：
+> [!WARNING]
+> **这是上游的镜像，不含本仓库的任何改动。** 本仓库没有发布自己的镜像，
+> 要在容器里跑本仓库的版本，请用下面第 3 条自行构建。
 
 ```bash
-# 拉取最新镜像
+# 拉取上游最新镜像（不含本仓库改动）
 docker pull xpzouying/xiaohongshu-mcp
 ```
 
@@ -407,7 +539,7 @@ Docker Hub 地址：[https://hub.docker.com/r/xpzouying/xiaohongshu-mcp](https:/
 
 ```bash
 # 下载 docker-compose.yml
-wget https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/main/docker/docker-compose.yml
+wget https://raw.githubusercontent.com/CNQQC/xhs-mcp/main/docker/docker-compose.yml
 
 # 或者如果已经克隆了项目，进入 docker 目录
 cd docker
@@ -422,12 +554,14 @@ docker compose logs -f
 docker compose stop
 ```
 
-**3. 自己构建镜像（可选）**
+**3. 自己构建镜像（要用本仓库的改动，走这条）**
 
 ```bash
 # 在项目根目录运行
-docker build -t xpzouying/xiaohongshu-mcp .
+docker build -t xhs-mcp .
 ```
+
+构建出来的镜像名是 `xhs-mcp`，`docker-compose.yml` 里的 `image:` 也要相应改掉。
 
 **4. 配置说明**
 
@@ -506,10 +640,23 @@ XHS_PROXY=http://proxy:port go run .
 服务端猜不到自己的公网地址，需要用 `XHS_PUBLIC_BASE_URL` 告诉它，否则只会给出相对路径 `/verify/<token>`：
 
 ```bash
-XHS_PUBLIC_BASE_URL=https://api.example.com/xhs ./xiaohongshu-mcp-darwin-arm64
+XHS_PUBLIC_BASE_URL=https://api.example.com/xhs ./xhs-mcp
 ```
 
 `/verify/*` 这两条路由**不走 `AUTH_TOKEN` 鉴权**（手机浏览器发不了 `Authorization` 头），路径里那个 32 字节随机 token 就是凭证：15 分钟有效、不写进访问日志、页面不引任何外部资源。网页只是把小红书发来的验证码原样显示出来，由账号本人扫码，不做任何自动验证。
+
+**浏览器并发上限（可选，本仓库新增）**：
+
+每个请求都会起一整个 Chromium 进程组。默认最多同时开 **2 个**，超出的请求排队，
+排不到就在 60 秒后明确失败，不做长排队。
+
+```bash
+XHS_BROWSER_CONCURRENCY=2 ./xhs-mcp
+```
+
+默认值 2 是在 **2 核 / 容器内存上限 1200MB** 上实测出来的（详见上文[相对上游的改动](#2-浏览器并发闸门此前全项目零并发控制)）。
+**换机器一定要重新实测**——尤其是改过 `mem_limit` 或 CPU 数之后。调大到容器扛不住的程度，
+OOM 杀掉的是整个容器而不是那一个请求。
 
 **访问鉴权（可选）**：
 
@@ -925,6 +1072,9 @@ npx mcporter list xiaohongshu-mcp
   - `click_more_replies`: 是否展开二级回复（可选），仅当 load_all_comments=true 时生效，默认 false
   - `reply_limit`: 跳过回复数过多的评论（可选），仅当 click_more_replies=true 时生效，默认 10
   - `scroll_speed`: 滚动速度（可选），`slow` | `normal` | `fast`，仅当 load_all_comments=true 时生效
+  - 🆕 **本仓库新增**：视频笔记会额外返回 `video.subtitleText`——服务端下载好字幕、
+    去掉时间轴后的完整台词文本。视频画面模型读不了，字幕能读。
+  - 🆕 **本仓库新增**：笔记与评论的时间戳同时给出可读格式，模型不用自己换算
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：feed_id, xsec_token, content）
 - `reply_comment_in_feed` - 回复笔记下的指定评论（必需：feed_id, xsec_token, content，以及 comment_id 或 user_id 至少一个）
 - `like_feed` - 点赞/取消点赞（必需：feed_id, xsec_token）
@@ -932,6 +1082,16 @@ npx mcporter list xiaohongshu-mcp
 - `favorite_feed` - 收藏/取消收藏（必需：feed_id, xsec_token）
   - `unfavorite`: 是否取消收藏（可选），true 为取消收藏，默认为收藏
 - `user_profile` - 获取用户个人主页信息（必需：user_id, xsec_token）
+- 🆕 `get_verification_qrcode` - **本仓库新增**。被小红书安全验证拦截时，取回服务端会话里
+  的那张验证二维码交给账号本人扫（无参数）
+  - 同时会给出一条一次性验证网页链接，手机浏览器直接打开就是一张大二维码、过期自动换新、
+    验证通过即显示结果。要用这条链接得先用 `XHS_PUBLIC_BASE_URL` 告诉服务端自己的公网地址，
+    否则只返回相对路径
+  - 只做搬运：码是小红书发的、扫的是账号本人的 App，**不解码、不识别、不自动提交**
+
+> 🆕 **本仓库新增**：以上任何工具在被安全验证拦截时，都会明确返回「被小红书安全验证拦截」，
+> 而不是像上游那样报成「没搜到结果」或直接超时——拿到这个错误就该去调 `get_verification_qrcode`，
+> 重试没有意义。
 
 ### 2.4. 使用示例
 
@@ -1042,27 +1202,18 @@ npx mcporter list xiaohongshu-mcp
 
 ## 4. 小红书 MCP 互助群
 
-**重要：在群里问问题之前，请一定要先仔细看完 README 文档以及查看 Issues。**
+上游维护着微信群和飞书群，**入群二维码请到[上游 README](https://github.com/xpzouying/xiaohongshu-mcp#4-小红书-mcp-互助群)获取**——
+二维码有时效，转贴过来只会过期误导人。
 
-### 微信群
-|                                                 微信群 25 群                                        |                                                 微信群 26 群                                         |
-| :------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: |
-| <img src="https://github.com/user-attachments/assets/c4c0f7a0-fc7c-453a-8bb9-890e53a907d4" alt="WechatIMG119" width="300"> | <img src="https://github.com/user-attachments/assets/e9569332-cac5-4e9e-92d8-c1498ef8699b" alt="WechatIMG119" width="300"> |
-
-### 飞书群
-
-|                                                         飞书 2 群                                                         |                                                         飞书 3 群                                                         |                                                         飞书 4 群                                                         |                                                         飞书 5 群                                                         |
-| :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: |
-| <img src="https://github.com/user-attachments/assets/4983ea42-ce5b-4e26-a8c0-33889093b579" alt="qr-feishu02" width="260"> | <img src="https://github.com/user-attachments/assets/c77b45da-6028-4d3a-b421-ccc6c7210695" alt="qr-feishu03" width="260"> | <img src="https://github.com/user-attachments/assets/c42f5595-71cd-4d9b-b7f8-0c333bd25e2b" alt="qr-feishu04" width="260"> | <img src="https://github.com/user-attachments/assets/c032801c-bf02-4e8e-81ad-fb8471b3d765" alt="qr-feishu05" width="260"> |
-
-> **注意：**
->
-> 1. 微信群的二维码有时间限制，有时候忘记更新，麻烦等待更新或者提交 Issue 催我更新。
-> 2. 飞书群，如果有的群满了，可以尝试扫一下另外一个群，总有坑位。
+提问前请先看完文档和 [Issues](https://github.com/xpzouying/xiaohongshu-mcp/issues)。
+另外请注意：**群是上游的，本仓库的改动不归群里负责**。属于本仓库的问题请提到
+[本仓库的 Issues](https://github.com/CNQQC/xhs-mcp/issues)。
 
 ## 🙏 致谢贡献者 ✨
 
-感谢以下所有为本项目做出贡献的朋友！（排名不分先后）
+下面是**上游项目 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)
+的贡献者名单**。这个项目的绝大部分代码是他们写的，本仓库只是站在上面加了一层。
+名单原样承自上游，链接均指向上游仓库。（排名不分先后）
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
@@ -1132,8 +1283,17 @@ npx mcporter list xiaohongshu-mcp
 
 ## 📄 许可证
 
-本项目采用 [Apache License 2.0](LICENSE) 开源。
+本仓库衍生自 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)，
+整体采用 [Apache License 2.0](LICENSE) 开源——与上游同一协议，原始版权声明原样保留。
 
-你可以自由地使用、修改和分发本项目，包括用于商业用途，只需保留原始的版权声明和许可证文件。详细条款以 [LICENSE](LICENSE) 文件为准。
+你可以自由地使用、修改和分发本项目，包括用于商业用途，只需保留版权声明和许可证文件。
 
-向本项目提交的贡献，默认按同一许可证授权。
+**关于 MIT**：本仓库新增的原创文件（`wait.go`、`browser_lease.go`、`subtitle.go`、
+`risk.go`、`verification.go`、`verify_link.go` 等，完整清单见 [NOTICE](NOTICE)）
+在 Apache-2.0 之外**同时**以 [MIT](LICENSE-MIT) 授权，方便别的项目单独取用其中某个文件。
+但把它们与本仓库其余部分一并使用或分发时，整体仍受 Apache-2.0 约束——
+双许可只在这些文件被单独取出时才有意义。
+
+被修改过的上游文件清单，按 Apache-2.0 第 4(b) 条记在 [NOTICE](NOTICE) 里。
+
+向本仓库提交的贡献，默认按 Apache-2.0 授权。

@@ -12,7 +12,15 @@
 
 ## 发版规范
 
-- 发版=打语义化 tag `vX.Y.Z` 推上去（触发 Release 与 Docker 镜像），破坏性变更进 major；main 每次推送自动生成的日期 tag `vYYYY.MM.DD.HHMM-sha` 不是发版，别跟它混。
+- 发版=打语义化 tag `vX.Y.Z` 推上去（触发 tag-release.yml 构建 Releases 二进制），破坏性变更进 major。
+- 本仓库没有 Docker 镜像发布流程（上游那条 workflow 用的是上游的 Docker Hub 账号，已删）。
+
+## 与上游的关系
+
+- 本仓库衍生自 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp) v2.5.0，整体沿用 Apache-2.0。
+- 改上游文件时，记得同步维护 `NOTICE` 里的「被修改过的上游文件」清单（Apache-2.0 第 4(b) 条要求）。
+- 新增原创文件时，同步加进 `NOTICE` 的「新增的原创文件」清单——那份清单是 `LICENSE-MIT` 的适用范围。
+- `go.mod` 模块路径保持上游的 `github.com/xpzouying/xiaohongshu-mcp` 不动，别改。
 
 ## PR Review 重点
 
