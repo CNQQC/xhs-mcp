@@ -97,6 +97,90 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
 	return &MCPToolResult{Content: contents}
 }
 
+// handleGetVerificationQrcode 取安全验证二维码，原样透出给账号本人扫。
+//
+// 只做搬运：码是小红书发的，扫的是用户自己的 App，服务端这边不解码、不识别、不提交。
+func (s *AppServer) handleGetVerificationQrcode(ctx context.Context) *MCPToolResult {
+	logrus.Info("MCP: 获取安全验证二维码")
+
+	result, err := s.xiaohongshuService.GetVerificationQrcode(ctx)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: "获取安全验证二维码失败: " + err.Error()}},
+			IsError: true,
+		}
+	}
+
+	if !result.Blocked {
+		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: result.Message}}}
+	}
+
+	// 等待上限说成相对时长而不是绝对时间：这是 hosted MCP，服务端多半跑在 UTC，
+	// 而读这句话的人在自己的时区，写「等到 15:04:05」只会让人算错还以为码已经废了。
+	// 时长直接取响应里的 Timeout，不另外读包常量——两个来源迟早会对不上。
+	text := fmt.Sprintf("%s\n\n请用已登录该账号的小红书 App 扫下面这张码完成验证 👇\n"+
+		"二维码约 1 分钟失效，服务端最多等 %s；过期就重新调用本工具取一张新的。\n"+
+		"验证通过后 cookies 会自动保存，直接重试原来的操作即可。\n\n%s",
+		result.Message, result.Timeout, verificationLinkHint(result))
+
+	mimeType, data, ok := splitDataURI(result.Img)
+	if !ok {
+		// 取到 src 却不是 data-URI，多半是站点改成了远端图片地址。这时把 src 原样交出去，
+		// 也别当 base64 硬塞进 image——那只会让客户端渲染出一张碎图，等于什么都没给。
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: text + "\n\n二维码地址：" + result.Img}},
+		}
+	}
+
+	return &MCPToolResult{
+		Content: []MCPContent{
+			{Type: "text", Text: text},
+			{Type: "image", MimeType: mimeType, Data: data},
+		},
+	}
+}
+
+// verificationLinkHint 把「浏览器直达」这条路一并交出去。
+//
+// 两条路都要能走：内联图片给能看到对话的场合，链接给「人在手机跟前、登不上 VPS」
+// 的场合。链接那条不会跟着码一起废掉——网页会自己保鲜，扫到为止。
+//
+// 没配 XHS_PUBLIC_BASE_URL 时绝不拼一条链接出来：服务端猜不到自己的公网地址，
+// 猜错的链接用户点不开，只会以为功能坏了。这时把相对路径和该配什么说清楚。
+func verificationLinkHint(r *VerificationQrcodeResponse) string {
+	if r.VerifyPath == "" {
+		return ""
+	}
+
+	if r.VerifyURL == "" {
+		return fmt.Sprintf("服务端未配置 %s，给不出可点击的链接。"+
+			"验证网页的相对路径是 %s（%s 内有效），请自行拼上本服务的公网地址后在手机浏览器打开。",
+			publicBaseURLEnv, r.VerifyPath, verifyTokenTTLText)
+	}
+
+	return fmt.Sprintf("也可以在手机浏览器里打开这条一次性链接（%s 内有效）：\n%s\n"+
+		"页面上是一张大二维码，过期会自动换新，验证一通过就直接显示结果——人不在电脑前也能解封。",
+		verifyTokenTTLText, r.VerifyURL)
+}
+
+// splitDataURI 把 data:image/png;base64,XXXX 拆成 mime 和 base64 载荷。
+//
+// 不照登录那样写死 image/png：验证码的 data-URI 由站点生成，哪天换成 jpeg/webp，
+// 硬贴 png 会让客户端渲染出碎图，而这张图是本工具唯一的交付物。
+func splitDataURI(src string) (mimeType, data string, ok bool) {
+	meta, payload, found := strings.Cut(src, ",")
+	if !found || !strings.HasPrefix(meta, "data:") || !strings.HasSuffix(meta, ";base64") {
+		return "", "", false
+	}
+
+	mimeType = strings.TrimSuffix(strings.TrimPrefix(meta, "data:"), ";base64")
+	if mimeType == "" || payload == "" {
+		return "", "", false
+	}
+
+	return mimeType, payload, true
+}
+
 // handleDeleteCookies 处理删除 cookies 请求，用于登录重置
 func (s *AppServer) handleDeleteCookies(ctx context.Context) *MCPToolResult {
 	logrus.Info("MCP: 删除 cookies，重置登录状态")

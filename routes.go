@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,7 +14,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
-	router.Use(gin.Logger())
+	router.Use(gin.LoggerWithConfig(gin.LoggerConfig{Skip: skipVerifyAccessLog}))
 	router.Use(gin.Recovery())
 
 	// 添加中间件
@@ -22,6 +23,11 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 
 	// 健康检查
 	router.GET("/health", healthHandler)
+
+	// 验证网页。故意放在 Bearer 鉴权组之外：手机浏览器发不了 Authorization 头，
+	// 路径里那个 32 字节随机 token 本身就是凭证（见 verify_link.go）。
+	router.GET(verifyPathPrefix+":token", appServer.verifyPageHandler)
+	router.GET(verifyPathPrefix+":token/state", appServer.verifyStateHandler)
 
 	// MCP 端点 - 使用官方 SDK 的 Streamable HTTP Handler
 	mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -48,6 +54,7 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		api.GET("/login/status", appServer.checkLoginStatusHandler)
 		api.GET("/login/qrcode", appServer.getLoginQrcodeHandler)
 		api.DELETE("/login/cookies", appServer.deleteCookiesHandler)
+		api.GET("/verification/qrcode", appServer.getVerificationQrcodeHandler)
 		api.POST("/publish", appServer.publishHandler)
 		api.POST("/publish_video", appServer.publishVideoHandler)
 		api.GET("/feeds/list", appServer.listFeedsHandler)
@@ -68,4 +75,12 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	}
 
 	return router
+}
+
+// skipVerifyAccessLog 把 /verify/* 挡在访问日志之外。
+//
+// gin.Logger 会把完整请求路径写进日志，而这条路径里就是那个唯一凭证——照写就等于
+// 把它落进磁盘、再随日志采集流到别处去。别的路由照常记。
+func skipVerifyAccessLog(c *gin.Context) bool {
+	return strings.HasPrefix(c.Request.URL.Path, verifyPathPrefix)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -39,6 +40,8 @@ const defaultBrowserConcurrency = 2
 // 短排队 + 明确失败，绝不长排队：单请求约 13 秒，排在第 2、3 位也就几十秒；
 // 等过这个数说明后面已经堆积，与其让调用方干等到自己超时（MCP 客户端通常 60 秒左右），
 // 不如立刻给个说得清的错误。
+//
+// 这只是兜底上限。调用方自己的 ctx 一旦取消，排队会立刻结束，不必等满这个数。
 const browserAcquireTimeout = 60 * time.Second
 
 var (
@@ -81,8 +84,12 @@ func (b *leasedBrowser) Close() {
 	b.Browser.Close()
 }
 
-// acquireBrowserSlot 取一张名额票，取不到就是明确失败。
-func acquireBrowserSlot() {
+// acquireBrowserSlot 取一张名额票，取不到就是明确失败。ctx 不能为 nil。
+//
+// 排队必须能被 ctx 打断。名额只有 2 个，而排队上限 60 秒正好压着 MCP 客户端的超时：
+// 客户端断开后如果还占着队位，等名额一空就会为一个没人要的请求拉起一整套 Chromium，
+// 把这 2 个名额之一浪费掉十几秒——真正还在等的请求反而可能因此排到超时。
+func acquireBrowserSlot(ctx context.Context) {
 	sem := browserSlots()
 
 	select {
@@ -95,20 +102,27 @@ func acquireBrowserSlot() {
 	logrus.Warnf("浏览器名额已满（上限 %d），排队中", cap(sem))
 	start := time.Now()
 
+	// 用 Timer 而不是 time.After：ctx 先取消时，After 留下的定时器要挂到点才回收。
+	timer := time.NewTimer(browserAcquireTimeout)
+	defer timer.Stop()
+
 	select {
 	case sem <- struct{}{}:
 		logrus.Infof("排队 %s 后取得浏览器名额", time.Since(start).Round(time.Millisecond))
-	case <-time.After(browserAcquireTimeout):
+	case <-ctx.Done():
 		// 这里 panic 而不是返回 error，是为了不改动 19 个调用点的签名；
 		// MCP 侧有 withPanicRecovery、REST 侧有 gin.Recovery()，都会转成正常的错误响应。
+		panic(fmt.Sprintf("排队等待浏览器名额 %s 后，调用方已取消请求：%v",
+			time.Since(start).Round(time.Millisecond), ctx.Err()))
+	case <-timer.C:
 		panic(fmt.Sprintf("浏览器繁忙：等待 %s 仍未取得名额（并发上限 %d），请稍后重试",
 			browserAcquireTimeout, cap(sem)))
 	}
 }
 
-// newLeasedBrowser 取名额、建浏览器，并保证建失败时名额不会漏掉。
-func newLeasedBrowser(build func() *headless_browser.Browser) *leasedBrowser {
-	acquireBrowserSlot()
+// newLeasedBrowser 取名额、建浏览器，并保证建失败时名额不会漏掉。ctx 不能为 nil。
+func newLeasedBrowser(ctx context.Context, build func() *headless_browser.Browser) *leasedBrowser {
+	acquireBrowserSlot(ctx)
 
 	var once sync.Once
 	release := func() { once.Do(func() { <-browserSlots() }) }

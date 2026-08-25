@@ -548,7 +548,27 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 18)
+	// 工具 19: 取安全验证二维码
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "get_verification_qrcode",
+			Description: "取小红书安全验证二维码。当 search_feeds 报「被小红书安全验证拦截」时用它取码，" +
+				"用已登录该账号的小红书 App 扫码完成验证。二维码约 1 分钟失效，请即取即扫；" +
+				"验证通过后 cookies 会自动保存，重试原来的操作即可。" +
+				"返回里同时给一条一次性验证网页链接，手机浏览器打开就是一张会自动保鲜的大二维码，" +
+				"适合人不在电脑前的时候。",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "Get Verification QR Code",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("get_verification_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+			result := appServer.handleGetVerificationQrcode(ctx)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	logrus.Infof("Registered %d MCP tools", 19)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式

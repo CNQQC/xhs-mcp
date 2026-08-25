@@ -499,6 +499,18 @@ XHS_PROXY=http://proxy:port go run .
 
 支持 HTTP/HTTPS/SOCKS5 代理，日志中会自动隐藏代理的认证信息。
 
+**验证链接的公网地址（可选）**：
+
+被小红书安全验证拦截时，`get_verification_qrcode` 除了把二维码透进对话里，还会发一条一次性验证网页链接——手机浏览器打开就是一张大二维码，过期自动换新，验证一通过就显示结果，适合人不在电脑前的时候。
+
+服务端猜不到自己的公网地址，需要用 `XHS_PUBLIC_BASE_URL` 告诉它，否则只会给出相对路径 `/verify/<token>`：
+
+```bash
+XHS_PUBLIC_BASE_URL=https://api.example.com/xhs ./xiaohongshu-mcp-darwin-arm64
+```
+
+`/verify/*` 这两条路由**不走 `AUTH_TOKEN` 鉴权**（手机浏览器发不了 `Authorization` 头），路径里那个 32 字节随机 token 就是凭证：15 分钟有效、不写进访问日志、页面不引任何外部资源。网页只是把小红书发来的验证码原样显示出来，由账号本人扫码，不做任何自动验证。
+
 **访问鉴权（可选）**：
 
 默认关闭鉴权。生产环境建议使用 `AUTH_TOKEN` 环境变量配置；非空的启动参数优先于环境变量，留空则读取 `AUTH_TOKEN`。
