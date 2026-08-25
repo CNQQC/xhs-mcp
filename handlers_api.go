@@ -68,6 +68,19 @@ func (s *AppServer) getLoginQrcodeHandler(c *gin.Context) {
 	respondSuccess(c, result, "获取登录二维码成功")
 }
 
+// getVerificationQrcodeHandler 处理 [GET /api/v1/verification/qrcode] 请求。
+// 取安全验证二维码（Base64 data-URI），交给账号本人用小红书 App 扫码完成验证。
+func (s *AppServer) getVerificationQrcodeHandler(c *gin.Context) {
+	result, err := s.xiaohongshuService.GetVerificationQrcode(c.Request.Context())
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "VERIFICATION_QRCODE_FAILED",
+			"获取安全验证二维码失败", err.Error())
+		return
+	}
+
+	respondSuccess(c, result, result.Message)
+}
+
 // deleteCookiesHandler 删除 cookies，重置登录状态
 func (s *AppServer) deleteCookiesHandler(c *gin.Context) {
 	err := s.xiaohongshuService.DeleteCookies(c.Request.Context())

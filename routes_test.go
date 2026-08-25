@@ -115,6 +115,50 @@ func TestNotificationRoutesRegistered(t *testing.T) {
 	}
 }
 
+// TestVerificationQrcodeWired 固定安全验证取码的两条入口都在。
+//
+// 工具注册和路由注册各是一段独立代码，漏掉哪一段编译都不报错；而这条路径是搜索被
+// 风控拦下之后唯一的出路，掉了就只剩一句用户执行不了的「请扫码验证」。
+func TestVerificationQrcodeWired(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+
+	var found bool
+	for _, tool := range result.Result.Tools {
+		if tool.Name == "get_verification_qrcode" {
+			found = true
+		}
+	}
+	assert.True(t, found, "工具 get_verification_qrcode 应已注册")
+
+	// 只读路由表，不发请求：这个 handler 会真的起浏览器访问小红书。
+	registered := make(map[string]bool)
+	for _, r := range router.Routes() {
+		registered[r.Method+" "+r.Path] = true
+	}
+	assert.True(t, registered["GET /api/v1/verification/qrcode"], "路由应已注册")
+}
+
 func TestProtectedRoutesRequireBearerToken(t *testing.T) {
 	router := setupRoutes(NewAppServer(NewXiaohongshuService(), "secret-token"))
 

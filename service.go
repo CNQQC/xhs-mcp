@@ -20,7 +20,16 @@ import (
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
-	logins loginSessions
+	// scans 登录扫码和安全验证扫码共用的待扫码登记表。
+	//
+	// 两者是同一个形状的问题：发一张码、留一个浏览器等结果，所以共用 loginSessions
+	// 那套「同一时刻只留一个」的约束。必须共用而不是各记各的：分开的话同一时刻可以
+	// 有两个纯等待的浏览器，正好等于默认名额上限 2，闸门被整体关死——而这两个浏览器
+	// 什么都不干，只在等同一部手机扫码。共用之后待扫码会话最多占掉一张票。
+	scans loginSessions
+
+	// links 一次性验证链接的登记表，见 verify_link.go。
+	links verifyLinks
 }
 
 // NewXiaohongshuService 创建小红书服务实例
@@ -52,6 +61,23 @@ type LoginQrcodeResponse struct {
 	Timeout    string `json:"timeout"`
 	IsLoggedIn bool   `json:"is_logged_in"`
 	Img        string `json:"img,omitempty"`
+}
+
+// VerificationQrcodeResponse 安全验证扫码二维码。Blocked 为 false 时只有 Message 有值。
+type VerificationQrcodeResponse struct {
+	Blocked    bool   `json:"blocked"`
+	Message    string `json:"message"`
+	Timeout    string `json:"timeout,omitempty"`
+	Img        string `json:"img,omitempty"`
+	PageURL    string `json:"page_url,omitempty"`
+	VerifyType string `json:"verify_type,omitempty"`
+	VerifyBiz  string `json:"verify_biz,omitempty"`
+
+	// VerifyURL 浏览器直达的一次性验证网页。没配 XHS_PUBLIC_BASE_URL 时为空——
+	// 服务端猜不到自己的公网地址，宁可不给，也不能给一条点不开的。
+	VerifyURL string `json:"verify_url,omitempty"`
+	// VerifyPath 上面那条链接的相对路径，任何情况下都有，供用户自己拼。
+	VerifyPath string `json:"verify_path,omitempty"`
 }
 
 // PublishResponse 发布响应
@@ -103,7 +129,7 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 
 // CheckLoginStatus 检查登录状态
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -135,20 +161,35 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 
 // GetLoginQrcode 获取登录的扫码二维码
 func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
-	page := b.NewPage()
+	b := newBrowser(ctx)
 
+	// 这是唯一一个浏览器要活过函数返回的方法（后台等扫码），所以不能简单 defer 关闭。
+	// 但也不能等某个分支确定了再 defer：这中间每一步都可能 panic——b.NewPage() 用的是
+	// rod 的 MustPage，FetchQrcodeImage 内部也是 Must*——那时 defer 还没挂上，整个
+	// 浏览器进程组（实测约 300MB）连同它占的那张名额票就永久泄漏了。名额只有 2 张，
+	// 漏两次闸门就彻底关死，之后每个请求都只能排队到超时。改成默认关闭 + 显式移交。
+	//
+	// page 用变量捕获而不是参数：defer 要赶在 NewPage 之前挂上，那时还没有 page。
+	var page *rod.Page
 	deferFunc := func() {
-		_ = page.Close()
+		if page != nil {
+			_ = page.Close()
+		}
 		b.Close()
 	}
+
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			deferFunc()
+		}
+	}()
+
+	page = b.NewPage()
 
 	loginAction := xiaohongshu.NewLogin(page)
 
 	img, loggedIn, err := loginAction.FetchQrcodeImage(ctx)
-	if err != nil || loggedIn {
-		defer deferFunc()
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +197,9 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	timeout := 4 * time.Minute
 
 	if !loggedIn {
+		// 所有权交给后台 goroutine，由它负责关闭
 		s.waitScanInBackground(loginAction, page, deferFunc, timeout)
+		handedOff = true
 	}
 
 	return &LoginQrcodeResponse{
@@ -179,13 +222,13 @@ func (s *XiaohongshuService) waitScanInBackground(
 	loginAction *xiaohongshu.LoginAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
 ) {
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-	seq := s.logins.start(cancel)
+	seq := s.scans.start(cancel)
 	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
 
 	go func() {
 		defer closeBrowser()
 		defer cancel()
-		defer s.logins.finish(seq)
+		defer s.scans.finish(seq)
 
 		if loginAction.WaitForLogin(ctxTimeout) {
 			if err := saveCookies(page); err != nil {
@@ -200,6 +243,215 @@ func (s *XiaohongshuService) waitScanInBackground(
 		logrus.Infof("登录会话 #%d 结束，未检测到扫码（超时或已被新的二维码取代）", seq)
 	}()
 }
+
+// verifyScanTimeout 后台等扫码通过安全验证的上限。
+//
+// 比登录那边的 4 分钟短得多，两个理由：验证页自述「二维码 1 分钟失效」，过期后再扫
+// 也不会通过，继续等只是白占一张浏览器名额票；而名额一共 2 张，占满 4 分钟等于把
+// 全局并发砍掉一半。90s = 1 分钟有效期 + 30s 余量（取到码、点开图、举起手机的路上
+// 损耗）。码过期了重新调一次工具即可——每次导航本来就是一个新的 verifyUuid 挑战。
+const verifyScanTimeout = 90 * time.Second
+
+// pageCloseTimeout 关页面的上限，理由同 cookieReadTimeout：走的是 browser 那条
+// context.Background()，不设上限就可能挂在归还名额票之前。
+const pageCloseTimeout = 5 * time.Second
+
+// GetVerificationQrcode 取安全验证二维码，透出给账号本人用小红书 App 扫。
+//
+// 这是搜索被拦之后唯一走得通的出路：验证页跟本次 headless 会话绑定，会话一销毁，
+// 那条 URL 就作废了，用户自己打开只会拿到另一个 verifyUuid 的新挑战。
+//
+// 生命周期照抄 GetLoginQrcode：浏览器要活过函数返回（后台等扫码结果并存 cookie），
+// 所以不能简单 defer 关闭，也不能等分支确定了再 defer——中间每一步都可能 panic
+// （b.NewPage() 是 rod 的 MustPage），那时 defer 还没挂上，整个浏览器进程组连同它
+// 占的那张名额票就永久泄漏了。名额只有 2 张，漏两次闸门彻底关死。默认关闭 + 显式移交。
+func (s *XiaohongshuService) GetVerificationQrcode(ctx context.Context) (*VerificationQrcodeResponse, error) {
+	// 先把上一轮还挂着的待扫码会话放掉，再去排队取名额票，顺序不能反：那个会话钉着
+	// 的就是一张票，而验证页自述二维码 1 分钟失效、工具文案又明确要求「过期就重新调
+	// 一次本工具」。反过来的话，新会话必须先抢到另一张票才轮得到它去关掉那个已经
+	// 彻底没用的旧会话——挡住重试的正是它自己的僵尸会话。
+	s.scans.cancelPending()
+
+	b := newBrowser(ctx)
+
+	// page 用变量捕获而不是参数：defer 要赶在 NewPage 之前挂上，那时还没有 page。
+	var page *rod.Page
+	deferFunc := func() {
+		if page != nil {
+			// 关页面同样要有上限：Page.Close 要等 TargetDestroyed 事件回来，走的还是
+			// browser 那条 context.Background()。这一步排在归还名额票之前，挂住就是漏票。
+			_ = page.Timeout(pageCloseTimeout).Close()
+		}
+		b.Close()
+	}
+
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			deferFunc()
+		}
+	}()
+
+	page = b.NewPage()
+
+	action := xiaohongshu.NewVerificationAction(page)
+
+	qrcode, err := action.FetchQrcode(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !qrcode.Blocked {
+		// 没被拦就没有码可透出，浏览器立刻关掉：这条路径上多留一秒都是白占名额票。
+		//
+		// 但话不能说成「无需验证」：这个分支同时盖着登录墙和任何没被识别出来的拦截
+		// 形态，一句「无需验证」会让调用方认定风控没问题，然后原地重试到死。带上
+		// 页面落点和下一步动作，至少能自己往下走一格。
+		return &VerificationQrcodeResponse{
+			Message: notBlockedMessage(qrcode.PageURL),
+			PageURL: qrcode.PageURL,
+		}, nil
+	}
+
+	// 所有权交给后台 goroutine，由它负责关闭
+	s.waitVerifyInBackground(action, page, deferFunc, verifyScanTimeout)
+	handedOff = true
+
+	// 顺手发一条浏览器直达链接。这里只登记 token，不预先再起一个浏览器给它用——
+	// 链接可能一直没人点开，那就是白占一张名额票等到超时。真要用的时候，网页
+	// 第一次拉 /state 会自己起（见 verify_link.go 的 openSession）。
+	//
+	// 发链接失败不影响上面那张已经取到的码：内联图片那条路照样走得通。
+	verifyURL, verifyPath := "", ""
+	if link, lerr := s.links.issue(); lerr != nil {
+		logrus.Errorf("生成验证链接失败: %v", lerr)
+	} else {
+		verifyURL, verifyPath = verifyLinkAddress(link.token)
+	}
+
+	message := "检测到小红书安全验证"
+	if qrcode.VerifyType != "" || qrcode.VerifyBiz != "" {
+		message += fmt.Sprintf("（verifyType=%s verifyBiz=%s）", qrcode.VerifyType, qrcode.VerifyBiz)
+	}
+
+	return &VerificationQrcodeResponse{
+		Blocked:    true,
+		Message:    message,
+		Timeout:    verifyScanTimeout.String(),
+		Img:        qrcode.Img,
+		PageURL:    qrcode.PageURL,
+		VerifyType: qrcode.VerifyType,
+		VerifyBiz:  qrcode.VerifyBiz,
+		VerifyURL:  verifyURL,
+		VerifyPath: verifyPath,
+	}, nil
+}
+
+// waitVerifyInBackground 在后台等账号本人扫码通过验证，过了就存 cookie。
+//
+// 存 cookie 是这条路径的重点：搜索全程不落盘，验证结果只写在这个 headless 会话的
+// cookie jar 里，浏览器一关就没了——下次请求重开浏览器又是未验证状态，用户白扫一次。
+func (s *XiaohongshuService) waitVerifyInBackground(
+	action *xiaohongshu.VerificationAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
+) {
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
+	seq := s.scans.start(cancel)
+	logrus.Infof("等待扫码通过安全验证，会话 #%d，超时 %s", seq, timeout)
+
+	go func() {
+		defer closeBrowser()
+		defer cancel()
+		defer s.scans.finish(seq)
+
+		if action.WaitVerified(ctxTimeout) {
+			if err := saveCookies(page); err != nil {
+				logrus.Errorf("安全验证已通过但保存 cookies 失败，会话 #%d: %v", seq, err)
+				return
+			}
+			logrus.Infof("安全验证已通过，cookies 已保存，会话 #%d", seq)
+			return
+		}
+
+		logrus.Infof("安全验证会话 #%d 结束，未检测到验证通过（超时、二维码失效或已被新的二维码取代）", seq)
+	}()
+}
+
+// notBlockedMessage 「这次没被拦」的说法。MCP/REST 和验证网页共用一套措辞。
+//
+// 话不能说成「无需验证」：这个分支同时盖着登录墙和任何没被识别出来的拦截形态，
+// 一句「无需验证」会让调用方认定风控没问题，然后原地重试到死。
+func notBlockedMessage(pageURL string) string {
+	message := "当前这次访问未被安全验证拦截"
+	if pageURL != "" {
+		message += fmt.Sprintf("（页面停在 %s）", pageURL)
+	}
+
+	return message + "；若原操作仍然失败，请先用 check_login_status 确认登录态，或直接重试原操作"
+}
+
+// startVerifySession 给验证网页起一个待扫码浏览器会话。
+//
+// 返回 (nil, qrcode, nil) 表示这次访问根本没被拦，浏览器已经关掉了。
+//
+// 生命周期同 GetVerificationQrcode：默认关闭 + 显式移交。中间每一步都可能 panic
+// （b.NewPage() 是 rod 的 MustPage），defer 没先挂上就是整个浏览器进程组连同它占的
+// 那张名额票永久泄漏——名额只有 2 张，漏两次闸门彻底关死。
+func (s *XiaohongshuService) startVerifySession(
+	ctx context.Context, link *verifyLink,
+) (*verifySession, *xiaohongshu.VerificationQrcode, error) {
+	// 先放掉上一轮还挂着的待扫码会话，再去排队取名额票，顺序不能反：那个会话钉着
+	// 的就是一张票，反过来就是标准的 acquire-before-release 自饿死。
+	s.scans.cancelPending()
+
+	b := newBrowser(ctx)
+
+	var page *rod.Page
+	deferFunc := func() {
+		if page != nil {
+			_ = page.Timeout(pageCloseTimeout).Close()
+		}
+		b.Close()
+	}
+
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			deferFunc()
+		}
+	}()
+
+	page = b.NewPage()
+
+	action := xiaohongshu.NewVerificationAction(page)
+
+	qrcode, err := action.FetchQrcode(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if !qrcode.Blocked {
+		return nil, qrcode, nil
+	}
+
+	sess := newVerifySession(s, link, &verificationProbe{action: action, page: page}, deferFunc)
+	handedOff = true
+
+	return sess, qrcode, nil
+}
+
+// verificationProbe verifyProbe 的生产实现，把会话循环要用的三件事包在一起。
+type verificationProbe struct {
+	action *xiaohongshu.VerificationAction
+	page   *rod.Page
+}
+
+func (p *verificationProbe) Live(ctx context.Context) (*xiaohongshu.LiveQrcode, error) {
+	return p.action.Live(ctx)
+}
+
+func (p *verificationProbe) Verified() bool { return p.action.Verified() }
+
+func (p *verificationProbe) SaveCookies() error { return saveCookies(p.page) }
 
 // PublishContent 发布内容
 func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
@@ -272,7 +524,7 @@ func (s *XiaohongshuService) processImages(images []string) ([]string, error) {
 
 // publishContent 执行内容发布
 func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) error {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -351,7 +603,7 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 
 // publishVideo 执行视频发布
 func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) error {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -367,7 +619,7 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 
 // ListFeeds 获取Feeds列表
 func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -390,7 +642,7 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 }
 
 func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -418,7 +670,7 @@ func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToke
 
 // GetFeedDetailWithConfig 使用配置获取Feed详情
 func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -446,7 +698,7 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 		return nil, err
 	}
 
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -470,7 +722,7 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 
 // PostCommentToFeed 发表评论到Feed
 func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsecToken, content string) (*PostCommentResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -487,7 +739,7 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsec
 
 // LikeFeed 点赞笔记
 func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -502,7 +754,7 @@ func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken str
 
 // UnlikeFeed 取消点赞笔记
 func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -517,7 +769,7 @@ func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken s
 
 // FavoriteFeed 收藏笔记
 func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -532,7 +784,7 @@ func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken
 
 // UnfavoriteFeed 取消收藏笔记
 func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -547,7 +799,7 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecTok
 
 // ReplyCommentToFeed 回复指定评论
 func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xsecToken, commentID, userID, content string) (*ReplyCommentResponse, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -570,7 +822,7 @@ func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xse
 
 // GetUnreadCount 获取通知未读数
 func (s *XiaohongshuService) GetUnreadCount(ctx context.Context) (*xiaohongshu.NotificationCount, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -586,7 +838,7 @@ func (s *XiaohongshuService) ListNotifications(ctx context.Context, tab string, 
 		return nil, err
 	}
 
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -597,7 +849,7 @@ func (s *XiaohongshuService) ListNotifications(ctx context.Context, tab string, 
 
 // LikeNotification 给通知里的评论点赞或取消点赞
 func (s *XiaohongshuService) LikeNotification(ctx context.Context, commentID string, unlike bool) (*xiaohongshu.NotificationLikeResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -608,7 +860,7 @@ func (s *XiaohongshuService) LikeNotification(ctx context.Context, commentID str
 
 // ReplyNotification 在通知页就地回复评论
 func (s *XiaohongshuService) ReplyNotification(ctx context.Context, commentID, content string) (*xiaohongshu.NotificationReplyResult, error) {
-	b := newBrowser()
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -617,15 +869,30 @@ func (s *XiaohongshuService) ReplyNotification(ctx context.Context, commentID, c
 	return xiaohongshu.NewNotificationAction(page).Reply(ctx, commentID, content)
 }
 
-func newBrowser() *headless_browser.Browser {
-	return browser.NewBrowser(configs.IsHeadless(),
-		browser.WithFingerprintSeed(configs.FingerprintSeed()),
-		browser.WithProxy(configs.Proxy()),
-	)
+// newBrowser 建一个浏览器实例，受并发闸门约束（见 browser_lease.go）。
+//
+// 返回的是 *leasedBrowser 而非裸 *headless_browser.Browser：它内嵌了后者，
+// 调用方用到的 NewPage 由方法提升直接透传，只有 Close 被拦下来顺便归还名额，
+// 所以 19 个调用点一处都不用改。
+func newBrowser(ctx context.Context) *leasedBrowser {
+	return newLeasedBrowser(ctx, func() *headless_browser.Browser {
+		return browser.NewBrowser(configs.IsHeadless(),
+			browser.WithFingerprintSeed(configs.FingerprintSeed()),
+			browser.WithProxy(configs.Proxy()),
+		)
+	})
 }
 
+// cookieReadTimeout 读 cookie 的上限。
+//
+// GetCookies 走的是 browser 的 ctx，而 headless_browser 用 rod.New() 从不设 Context——
+// 那就是 context.Background()，既没有超时也不响应取消。两个调用点都在后台 goroutine 里，
+// 且都排在归还浏览器名额票之前：CDP 迟迟不回就永久阻塞，那张票再也回不来。名额只有
+// 2 张（见 browser_lease.go），漏两次闸门就彻底关死，之后每个请求都只能排队到超时。
+const cookieReadTimeout = 10 * time.Second
+
 func saveCookies(page *rod.Page) error {
-	cks, err := page.Browser().GetCookies()
+	cks, err := page.Browser().Timeout(cookieReadTimeout).GetCookies()
 	if err != nil {
 		return err
 	}
@@ -640,8 +907,8 @@ func saveCookies(page *rod.Page) error {
 }
 
 // withBrowserPage 执行需要浏览器页面的操作的通用函数
-func withBrowserPage(fn func(*rod.Page) error) error {
-	b := newBrowser()
+func withBrowserPage(ctx context.Context, fn func(*rod.Page) error) error {
+	b := newBrowser(ctx)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -659,7 +926,7 @@ func (s *XiaohongshuService) GetMyProfile(ctx context.Context, tab string) (*Use
 
 	var result *xiaohongshu.UserProfileResponse
 
-	err = withBrowserPage(func(page *rod.Page) error {
+	err = withBrowserPage(ctx, func(page *rod.Page) error {
 		action := xiaohongshu.NewUserProfileAction(page)
 		result, err = action.GetMyProfileViaSidebar(ctx, parsed)
 		return err

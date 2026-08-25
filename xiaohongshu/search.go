@@ -3,6 +3,7 @@ package xiaohongshu
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
@@ -83,12 +85,18 @@ func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
 	return pending, nil
 }
 
+// pageTimeout 一次搜索的页面总预算。
+const pageTimeout = 60 * time.Second
+
+// probeTimeout 单个等待步骤的独立预算：等不到只花掉这些，不吃掉整个 pageTimeout。
+const probeTimeout = 10 * time.Second
+
 type SearchAction struct {
 	page *rod.Page
 }
 
 func NewSearchAction(page *rod.Page) *SearchAction {
-	pp := page.Timeout(60 * time.Second)
+	pp := page.Timeout(pageTimeout)
 
 	return &SearchAction{page: pp}
 }
@@ -100,47 +108,66 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 		return nil, err
 	}
 
-	// 注意 .Context(ctx) 会替换掉 NewSearchAction 里设的 60s deadline，必须在其后重新 Timeout，
-	// 否则搜索页不 stable 时 MustWaitStable/MustWait 会永久挂起（无 deadline 可依赖）。
-	page := s.page.Context(ctx).Timeout(60 * time.Second)
+	// 注意 .Context(ctx) 会替换掉 NewSearchAction 里设的 deadline，必须在其后重新 Timeout，
+	// 否则搜索页不 stable 时等待会永久挂起（无 deadline 可依赖）。
+	page := s.page.Context(ctx).Timeout(pageTimeout)
 
 	// 搜索结果同样来自 __INITIAL_STATE__，封面图不必真的下载解码。
 	defer blockHeavyResources(page)()
 
 	searchURL := makeSearchURL(keyword)
+
+	// rod 的 Navigate 发完 Page.navigate 就返回，不等重定向落地，紧接着读到的 URL
+	// 还是跳转前的地址，风控判定必然落空。等 DOMContentLoaded，那之后才是 302 后的
+	// 最终地址（实测 11ms 到；lifecycle 的 commit 事件 Chrome 不发，等它只会白等满预算）。
+	waitLanded := page.Timeout(probeTimeout).WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)
 	page.MustNavigate(searchURL)
-	// 等的是搜索结果本身落地。
-	//
-	// 原先是 MustWaitStable：要求「DOM 零变化 + 网络空闲 + load 完成」三者同时成立，
-	// 而搜索页有懒加载图片、视频预览和无限滚动占位，这个条件实测无法达成，只会一路耗到
-	// 60s deadline 后 panic（容器日志三天内 32 次 search_feeds context deadline exceeded）。
-	//
-	// 但也不能只等 __INITIAL_STATE__ 这个壳：壳在页面初始化时就有了，feeds 要等接口回来
-	// 才填。只检查壳会在慢网络下提前放行，而下面的提取是一次性的、没有重试，拿到空值就直接
-	// 报 ErrNoFeeds——表现为"没搜到结果"，比 panic 更难排查。故这里等到 feeds 真正有值。
-	//
-	// .value / ._value 两种形态都要认，与下面的提取逻辑和 feedIDsJS 保持一致。
-	// 搜索确实无结果时也会等满超时，交给下面的提取按 ErrNoFeeds 正常处理。
-	softWaitData(page, `() => {
-		const f = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.search
-			&& window.__INITIAL_STATE__.search.feeds;
-		const v = f ? (f.value !== undefined ? f.value : f._value) : null;
-		return Array.isArray(v) && v.length > 0;
-	}`, 20*time.Second, "搜索结果")
+	waitLanded()
+
+	if err := checkRiskVerification(page); err != nil {
+		return nil, err
+	}
+
+	// 这里不再插一步 WaitStable：信息流页面有心跳/懒加载信标，请求永远不会空闲，
+	// 它必然等满自己那份预算（实测 10s）才收场，而它挡在识别与读取之前——晚到的
+	// 跳转要多花 10s 才被发现（实测 10.017s vs 354ms），正常页面也白等 10s。
+	// 晚到的跳转由 waitSearchFeeds 循环里的 checkRiskVerification 接住，注水就绪由
+	// 同一循环的 readSearchFeeds 接住，筛选那一步本来就有自己的元素等待。
+	result, err := waitSearchFeeds(page, searchURL, 8*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if len(pending) > 0 {
+		// 先用带独立预算的克隆探一下筛选按钮：首屏正常、humanize.Delay 期间才被跳到
+		// 验证页时，裸 MustElement 会一路等到页面 deadline 才 panic。
+		if _, err := page.Timeout(probeTimeout).Element(`div.filter`); err != nil {
+			return nil, riskOrError(page, "未找到筛选按钮 div.filter", err)
+		}
+
+		// 确认存在后从主 page 上重新取一次：从 Timeout 克隆上取到的元素连同它的 Mouse
+		// 只剩探测那点预算，后面的悬停和点击会跟着一起短命。
+		filterButton, err := page.Element(`div.filter`)
+		if err != nil {
+			return nil, riskOrError(page, "读取筛选按钮 div.filter 失败", err)
+		}
+
 		// 悬停在筛选按钮上展开面板
-		filterButton := page.MustElement(`div.filter`)
 		if err := humanize.Hover(filterButton); err != nil {
 			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BeforeClick)
 
-		// 等待筛选面板出现
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
+		// 等待筛选面板出现，同样给独立预算
+		if err := page.Timeout(probeTimeout).Wait(rod.Eval(filterPanelJS)); err != nil {
+			return nil, riskOrError(page, "筛选面板未出现", err)
+		}
 
-		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位
+		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位。上面的注水轮询保证了
+		// before 是一批真实的 id：waitFeedsChanged 的退出条件是 now != "" && now != before，
+		// before 为空时第一次读到非空就返回，等于没等筛选生效。
 		before := readFeedIDs(page)
 
 		// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等；
@@ -157,23 +184,19 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 		}
 
 		waitFeedsChanged(page, before, 15*time.Second)
+
+		// 筛选后是另一批数据，首屏那次读到的作废
+		if result, err = readSearchFeeds(page); err != nil {
+			return nil, err
+		}
 	}
 
-	result := page.MustEval(`() => {
-		if (window.__INITIAL_STATE__ &&
-		    window.__INITIAL_STATE__.search &&
-		    window.__INITIAL_STATE__.search.feeds) {
-			const feeds = window.__INITIAL_STATE__.search.feeds;
-			const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
-			if (feedsData) {
-				return JSON.stringify(feedsData);
-			}
-		}
-		return "";
-	}`).String()
-
 	if result == "" {
-		return nil, errors.ErrNoFeeds
+		// 兜底再判一次：也可能是点筛选、等刷新这十几秒里才被跳到验证页的。
+		if err := checkRiskVerification(page); err != nil {
+			return nil, err
+		}
+		return nil, noFeedsError(page, searchURL, "搜索结束时页面上没有 feeds 数据")
 	}
 
 	var feeds []Feed
@@ -182,6 +205,98 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}
 
 	return onlyNotes(feeds), nil
+}
+
+// filterPanelJS 筛选面板是否已经展开。
+const filterPanelJS = `() => document.querySelector('div.filter-panel') !== null`
+
+// riskOrError 筛选路径上的失败收口：先看一眼是不是被风控拦了（首屏正常、等待期间
+// 才被跳转是常见形态），不是就按原因报错。
+func riskOrError(page *rod.Page, what string, cause error) error {
+	if err := checkRiskVerification(page); err != nil {
+		return err
+	}
+
+	// 不是安全验证，那就是一种没被识别出来的形态（登录墙、站点改版、真的慢）。
+	// 不留痕的话客户端只拿到一句「未找到 xxx: context deadline exceeded」，
+	// 日志里一行都没有，运维无从判断到底被带到哪了。
+	warnPageState(page, what)
+
+	return fmt.Errorf("%s: %w", what, cause)
+}
+
+// noFeedsError 报「没读到结果」，同时把页面现场打进日志。最终 URL 和请求的搜索页不
+// 一致时（登录墙这类没被识别出来的拦截形态）把它拼进错误，客户端至少知道被带到哪了。
+func noFeedsError(page *rod.Page, searchURL, reason string) error {
+	finalURL := warnPageState(page, reason)
+	if finalURL != "" && finalURL != searchURL {
+		return fmt.Errorf("%w（最终停留在 %s）", errors.ErrNoFeeds, finalURL)
+	}
+
+	return errors.ErrNoFeeds
+}
+
+// searchFeedsJS 读搜索结果的 feeds 原始 JSON。
+//
+// 搜不到东西时返回 "[]" 而不是 ""，这两者必须分开——"" 只代表「还没注水」。
+// 下面 feedIDsJS 的 join(",") 对空数组同样给 ""，拿它当就绪条件的话，一个真的
+// 没有结果的关键词会白等满 8 秒再报 ErrNoFeeds，把「确实没有结果」这个正确答案
+// 变成一次硬失败。所以两段 JS 不能互相替代。
+const searchFeedsJS = `() => {
+	const f = window.__INITIAL_STATE__?.search?.feeds;
+	const v = f ? (f.value !== undefined ? f.value : f._value) : null;
+	return v ? JSON.stringify(v) : "";
+}`
+
+// readSearchFeeds 读一次注水结果。
+//
+// 页面 ctx 过期时 Eval 会立刻返回 context 错误（不 panic），必须原样报出来：吞成空串
+// 的话「页面超时」和「还没注水」在下游完全同形，只能一路空转到超时，再报一句无从
+// 判断的「没有捕获到 feeds 数据」。
+func readSearchFeeds(page *rod.Page) (string, error) {
+	res, err := page.Eval(searchFeedsJS)
+	if err == nil {
+		return res.Value.Str(), nil
+	}
+
+	// pageInfo 走 browser 的 ctx，页面 deadline 烧穿之后依然读得到——这正是它唯一
+	// 还能留下现场的场景。不留就只剩一句「页面加载超时」，连页面停在哪都不知道。
+	switch ctxErr := page.GetContext().Err(); {
+	case stderrors.Is(ctxErr, context.DeadlineExceeded):
+		warnPageState(page, "读取搜索结果时页面已超时")
+		return "", fmt.Errorf("页面加载超时（%s），未能读到搜索结果", pageTimeout)
+	case ctxErr != nil:
+		warnPageState(page, "读取搜索结果时请求已被取消")
+		return "", fmt.Errorf("搜索已被取消，未能读到搜索结果: %w", ctxErr)
+	default:
+		return "", fmt.Errorf("读取搜索结果失败: %w", err)
+	}
+}
+
+// waitSearchFeeds 等首屏搜索结果注水就绪，顺带识别风控拦截。
+//
+// 原先是 MustWait(__INITIAL_STATE__ !== undefined)：这个壳首屏就存在、立刻返回，等于
+// 没等，后面读到的可能是还没灌数据的空 feeds——偶发的 ErrNoFeeds 就是这么来的。
+// 改成 feeds.go 那套注水轮询：8s 预算、300ms 间隔、先读后睡，正常页面上不额外增加延迟。
+func waitSearchFeeds(page *rod.Page, searchURL string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		result, err := readSearchFeeds(page)
+		if err != nil {
+			return "", err
+		}
+		if result != "" {
+			return result, nil
+		}
+		if err := checkRiskVerification(page); err != nil {
+			return "", err
+		}
+		if time.Now().After(deadline) {
+			return "", noFeedsError(page, searchURL,
+				fmt.Sprintf("首屏搜索结果在 %s 内没有注水就绪", timeout))
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // feedIDsJS 读当前结果集的 id 列表，用来判断数据有没有换一批。
@@ -201,10 +316,8 @@ func readFeedIDs(page *rod.Page) string {
 
 // waitFeedsChanged 等筛选后的数据到位。
 //
-// 点完筛选项之后不能立刻读结果：站点是先把 feeds 清空、再灌入新数据，
-// 中间这段时间读到的要么是空，要么还是筛选前那一批。原先用
-// MustWait(__INITIAL_STATE__ !== undefined) 等，而这个条件从首屏起就为真、
-// 立即返回，等于没等——多个筛选项一起用时表现为只有一部分生效。
+// 点完筛选项不能立刻读结果：站点是先把 feeds 清空、再灌入新数据，中间这段时间读到的
+// 要么是空，要么还是筛选前那一批。
 //
 // 超时不报错：筛选已经点上了，宁可返回可能偏旧的数据，也不要整个搜索失败。
 func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
@@ -213,9 +326,14 @@ func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
 		if now := readFeedIDs(page); now != "" && now != before {
 			return
 		}
+		if page.GetContext().Err() != nil {
+			// 页面 ctx 已经结束，再轮询也读不到，错误交给随后的 readSearchFeeds 收口
+			return
+		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	logrus.Warnf("筛选后等待结果刷新超时（%s），返回的可能是筛选前的数据", timeout)
+
+	logrus.Warnf("筛选后结果集未发生变化（%s），可能是该筛选项本就不改变结果", timeout)
 }
 
 // findFilterOption 在筛选面板里定位一个选项：按标签找到组，再在组内按文本找选项。
