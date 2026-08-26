@@ -535,17 +535,16 @@ Docker Hub 地址：[https://hub.docker.com/r/xpzouying/xiaohongshu-mcp](https:/
 
 **2. 使用 Docker Compose 启动（推荐）**
 
-我们提供了配置好的 `docker-compose.yml` 文件，可以直接使用：
+`docker/docker-compose.yml` 已经配好，会直接从源码构建（本仓库不发布镜像），
+所以要在克隆下来的仓库里用——单独下载一份 compose 文件跑不起来：
 
 ```bash
-# 下载 docker-compose.yml
-wget https://raw.githubusercontent.com/CNQQC/xhs-mcp/main/docker/docker-compose.yml
-
-# 或者如果已经克隆了项目，进入 docker 目录
 cd docker
 
-# 启动服务
-docker compose up -d
+# 构建并启动
+VERSION=$(git describe --tags --always --dirty) \
+XHS_PUBLIC_BASE_URL=https://api.example.com/xhs \
+  docker compose up -d --build
 
 # 查看日志
 docker compose logs -f
@@ -554,14 +553,21 @@ docker compose logs -f
 docker compose stop
 ```
 
-**3. 自己构建镜像（要用本仓库的改动，走这条）**
+两个变量都不是可有可无的：
+
+- `VERSION` 经 ldflags 编进二进制，`/health` 才报得出线上跑的是哪个 commit；不传就一直是 `dev`。
+- `XHS_PUBLIC_BASE_URL` 是安全验证那条一次性链接的公网地址前缀，不配就只给相对路径
+  `/verify/<token>`，等于没有可点的链接（详见下面「安全验证」一节）。反代带路径前缀时要连前缀一起写。
+
+**3. 只构建镜像（不走 compose）**
 
 ```bash
 # 在项目根目录运行
-docker build -t xhs-mcp .
+docker build --build-arg VERSION=$(git describe --tags --always --dirty) -t xhs-mcp .
 ```
 
-构建出来的镜像名是 `xhs-mcp`，`docker-compose.yml` 里的 `image:` 也要相应改掉。
+构建出来的镜像名是 `xhs-mcp`，跟 `docker-compose.yml` 里的 `image:` 一致。
+漏了 `--build-arg VERSION` 的话 `/health` 会一直报 `dev`，线上出问题时看不出跑的是哪个 commit。
 
 **4. 配置说明**
 

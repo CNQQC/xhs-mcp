@@ -30,19 +30,27 @@ Docker Hub 地址：[https://hub.docker.com/r/xpzouying/xiaohongshu-mcp](https:/
 docker pull crpi-hocnvtkomt7w9v8t.cn-beijing.personal.cr.aliyuncs.com/xpzouying/xiaohongshu-mcp
 ```
 
-### 1.3 自己构建镜像（可选）
+### 1.3 自己构建镜像（要用本仓库的改动，走这条）
 
-在有项目的Dockerfile的目录运行
+在项目根目录（有 Dockerfile 的那一级）运行：
 
 ```bash
-docker build -t xpzouying/xiaohongshu-mcp .
+docker build --build-arg VERSION=$(git describe --tags --always --dirty) -t xhs-mcp .
 ```
 
-`xpzouying/xiaohongshu-mcp`为镜像名称和版本。
+`VERSION` 经 ldflags 编进二进制，`/health` 才报得出跑的是哪个 commit；
+漏了它就一直是 `dev`，线上出问题时只能靠猜。
+
+走 compose 的话不必手动构建——`docker compose up -d --build` 会自己来（见下一节）。
 
 <img width="2576" height="874" alt="image" src="https://github.com/user-attachments/assets/fe7e87f1-623f-409f-8b54-e11d380fc7b8" />
 
 ## 2. 手动 Docker Compose
+
+本仓库的 `docker-compose.yml` 带了 `build:`，`docker compose up -d` 会直接从源码构建，
+不必先手动 `docker build`；改了源码用 `docker compose up -d --build` 重建。
+两个该配的环境变量见 [1.3](#13-自己构建镜像要用本仓库的改动走这条)（`VERSION`）和
+[第 6 节](#6-配置验证网页的公网地址xhs_public_base_url)（`XHS_PUBLIC_BASE_URL`）。
 
 > **国内用户提示**：如需使用阿里云镜像源，请修改 `docker-compose.yml` 文件，注释掉 Docker Hub 镜像行，取消阿里云镜像行的注释：
 > ```yaml
@@ -139,7 +147,26 @@ AUTH_TOKEN=your-secret-token docker compose up -d
 
 Compose 通过 `${AUTH_TOKEN:-}` 读取宿主环境变量。启用鉴权后，所有 MCP 客户端请求都必须带上自定义请求头：`Authorization: Bearer <token>`。
 
-## 6. 扫码登录
+## 6. 配置验证网页的公网地址（`XHS_PUBLIC_BASE_URL`）
+
+账号被小红书安全验证拦住时，`get_verification_qrcode` 会发一条一次性链接
+`/verify/<token>`，用手机浏览器打开就能看到大二维码、扫完自动显示结果——
+这是人不在电脑前也能解封的主路径。
+
+服务端猜不到自己的公网地址，也**故意不拿请求的 `Host` 头去猜**：反代后面猜错了，
+用户点开是坏链接，只会以为功能坏了。所以不配这个变量就只给相对路径，等于没有可点的链接。
+
+### 使用 docker compose
+
+```bash
+XHS_PUBLIC_BASE_URL=https://api.example.com/xhs docker compose up -d
+```
+
+反代带路径前缀时要**连前缀一起写**（上面那个 `/xhs` 就是）。
+`/verify/*` 这两条路由不走 `AUTH_TOKEN` 鉴权（手机浏览器发不了 `Authorization` 头），
+路径里那个 32 字节随机 token 就是凭证：15 分钟有效、不写进访问日志、页面不引任何外部资源。
+
+## 7. 扫码登录
 
 1. **重要**，一定要先把 App 提前打开，准备扫码登录。
 2. 尽快扫码，有可能二维码会过期。
