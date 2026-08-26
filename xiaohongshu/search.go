@@ -204,7 +204,36 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 		return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
 	}
 
-	return onlyNotes(feeds), nil
+	notes := onlyNotes(feeds)
+	logSearchYield(page, keyword, len(feeds), len(notes))
+
+	return notes, nil
+}
+
+// logSearchYield 记一行「原始条数 / 笔记条数」。
+//
+// 空结果是软性风控最常见的样子：验证墙撤掉了、页面正常打开、__INITIAL_STATE__ 也
+// 注水了，就是一条笔记都不给。这时返回的 count=0 跟「这个词真的没内容」在客户端看
+// 来一模一样，日志里也查不出区别。实测过一次：账号解除硬验证之后，「咖啡」「深圳美食」
+// 这类大词连续返回 0 条，而页面正文只剩导航栏和备案号。
+//
+// 两个数分开记才说得清是哪一种：原始就是 0 → 站点没给数据；原始有、笔记为 0 →
+// 只回了广告和用户卡片，被 onlyNotes 滤光了。后者更像定向限流，所以抬到 Warn 并
+// 附上页面现场。
+func logSearchYield(page *rod.Page, keyword string, raw, notes int) {
+	if raw > 0 && notes == 0 {
+		warnPageState(page, fmt.Sprintf("搜索 %q 拿到 %d 条结果但没有一条是笔记（疑似只回了广告/用户卡片）", keyword, raw))
+
+		return
+	}
+
+	if raw == 0 {
+		logrus.Warnf("搜索 %q 没有拿到任何结果（页面正常但 feeds 为空，可能是软性限流，也可能这个词确实没内容）", keyword)
+
+		return
+	}
+
+	logrus.Infof("搜索 %q 命中 %d/%d 条笔记", keyword, notes, raw)
 }
 
 // filterPanelJS 筛选面板是否已经展开。
