@@ -15,6 +15,12 @@
 - 发版=打语义化 tag `vX.Y.Z` 推上去（触发 tag-release.yml 构建 Releases 二进制），破坏性变更进 major。
 - 本仓库没有 Docker 镜像发布流程（上游那条 workflow 用的是上游的 Docker Hub 账号，已删）。
 
+## 远程仓库
+
+- 云端仓库是个人独立仓库 `newrepo` = [CNQQC/xhs-mcp](https://github.com/CNQQC/xhs-mcp)，以后的开发一律推这里。
+- `origin`（上游 xpzouying/xiaohongshu-mcp）和 `fork`（独立成库前的 CNQQC/xiaohongshu-mcp）都只读，不推。
+- 已设 `remote.pushDefault=newrepo` 和 `checkout.defaultRemote=newrepo`，`git push` 不带参数就走个人仓库。
+
 ## 与上游的关系
 
 - 本仓库衍生自 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp) v2.5.0，整体沿用 Apache-2.0。
