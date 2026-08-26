@@ -69,10 +69,15 @@ func blockedProbe(img string) *fakeProbe {
 func shrinkTimings(t *testing.T, beat, life time.Duration) {
 	t.Helper()
 
+	// firstGrace 也要一起收缩。测试里的会话大多一拍心跳都不发（模拟「发了链接但
+	// 没人点开」），走的正是首次心跳前那条 90s 的宽限——不收缩它，等的就是 90 秒。
 	oldBeat, oldLife, oldTick := verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval
+	oldGrace := verifyFirstBeatGrace
 	verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval = beat, life, 20*time.Millisecond
+	verifyFirstBeatGrace = beat
 	t.Cleanup(func() {
 		verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval = oldBeat, oldLife, oldTick
+		verifyFirstBeatGrace = oldGrace
 	})
 }
 
@@ -309,7 +314,7 @@ func TestVerifySessionTornDownWhenHeartbeatStops(t *testing.T) {
 
 	// 票要还干净：scans 里不该再留着这个会话的登记
 	svc.scans.mu.Lock()
-	assert.Nil(t, svc.scans.cancel, "会话结束后 scans 登记应已清掉")
+	assert.Nil(t, svc.scans.cur, "会话结束后 scans 登记应已清掉")
 	svc.scans.mu.Unlock()
 
 	// 拆完再拆也只算一次
@@ -463,8 +468,9 @@ func TestVerifySessionSupersededByNewScan(t *testing.T) {
 
 	svc, link, first, closed := newTestSession(t, blockedProbe("data:image/png;base64,AAAA"))
 
-	// 模拟又调了一次 get_verification_qrcode
-	svc.scans.start(func() {})
+	// 模拟又调了一次 get_verification_qrcode。这个假会话没有浏览器要还，
+	// released 给一个已关闭的通道，免得 cancelPending 干等到超时。
+	svc.scans.start(func() {}, releasedNow())
 
 	waitFor(t, 3*time.Second, func() bool { return closed.Load() == 1 })
 	assert.True(t, first.stopped())

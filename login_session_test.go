@@ -16,26 +16,26 @@ func TestLoginSessions(t *testing.T) {
 		var l loginSessions
 		closed := 0
 
-		l.start(func() { closed++ })
+		l.start(func() { closed++ }, releasedNow())
 		assert.Equal(t, 0, closed, "第一个会话不该被关")
 
-		l.start(func() {})
+		l.start(func() {}, releasedNow())
 		assert.Equal(t, 1, closed, "开第二个时应关掉第一个")
 	})
 
 	t.Run("第一个会话无需关闭任何东西", func(t *testing.T) {
 		var l loginSessions
-		assert.NotPanics(t, func() { l.start(func() {}) })
+		assert.NotPanics(t, func() { l.start(func() {}, releasedNow()) })
 	})
 
 	t.Run("会话结束后不会再被关第二次", func(t *testing.T) {
 		var l loginSessions
 		closed := 0
 
-		seq := l.start(func() { closed++ })
+		seq := l.start(func() { closed++ }, releasedNow())
 		l.finish(seq)
 
-		l.start(func() {})
+		l.start(func() {}, releasedNow())
 		assert.Equal(t, 0, closed, "已结束的会话不该再被关闭")
 	})
 
@@ -43,14 +43,14 @@ func TestLoginSessions(t *testing.T) {
 		var l loginSessions
 		newClosed := 0
 
-		oldSeq := l.start(func() {})
-		l.start(func() { newClosed++ }) // 新会话上位
+		oldSeq := l.start(func() {}, releasedNow())
+		l.start(func() { newClosed++ }, releasedNow()) // 新会话上位
 
 		// 旧会话此时才走完收尾，它必须认出自己已不是当前会话
 		l.finish(oldSeq)
 
 		// 再开一个：如果上一步误清了登记，新会话就永远关不掉了
-		l.start(func() {})
+		l.start(func() {}, releasedNow())
 		assert.Equal(t, 1, newClosed, "新会话仍应被后来者关闭")
 	})
 
@@ -66,7 +66,7 @@ func TestLoginSessions(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				seq := l.start(func() {})
+				seq := l.start(func() {}, releasedNow())
 				mu.Lock()
 				seen[seq] = true
 				mu.Unlock()
@@ -76,4 +76,15 @@ func TestLoginSessions(t *testing.T) {
 
 		assert.Len(t, seen, n, "序号必须唯一，否则 finish 会误清别人的登记")
 	})
+}
+
+// releasedNow 表示「名额票已经还回来了」。
+//
+// 测试里的假会话没有真浏览器要关，start 要的那个通道给一个已关闭的即可——
+// cancelPending 会等这个通道，不给就会干等到超时。
+func releasedNow() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+
+	return ch
 }
