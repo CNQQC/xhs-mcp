@@ -16,7 +16,12 @@ Copyright 2026 CNQQC
 
 以下上游文件被本项目修改过：
 
+    .github/CODEOWNERS
+    CLAUDE.md
     README.md
+    README_EN.md
+    docker/README.md
+    docker/docker-compose.yml
     docs/API.md
     errors/errors.go
     handlers_api.go

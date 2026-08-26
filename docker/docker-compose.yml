@@ -1,8 +1,21 @@
 services:
   xiaohongshu-mcp:
-    # 本仓库没有发布镜像，先在项目根目录 `docker build -t xhs-mcp .` 构建
+    # 本仓库没有发布镜像，只能从源码构建，所以直接带上 build——
+    # `docker compose up -d` 会自己构建并打上 xhs-mcp 这个 tag，不必先手动 docker build。
+    #
+    # 代价是这份文件必须在克隆下来的仓库里用（context 指向上一级的项目根目录），
+    # 单独下载一份 compose 文件跑不起来。改了源码要重建：`docker compose up -d --build`。
     image: xhs-mcp
+    build:
+      context: ..
+      args:
+        # 版本号经 ldflags 编进二进制，/health 直接报得出线上是哪个 commit。
+        # 不传就是 dev，那等于放弃这个信息——排查线上问题时只能靠猜：
+        #
+        #     VERSION=$(git describe --tags --always --dirty) docker compose up -d --build
+        VERSION: ${VERSION:-dev}
     # 下面两个是上游的镜像，不含本仓库的改动，仅在你想跑原版时才取消注释
+    # （那时要连上面的 build 一起删掉，否则还是会从源码构建，只是换了个 tag）
     # image: xpzouying/xiaohongshu-mcp
     # image: crpi-hocnvtkomt7w9v8t.cn-beijing.personal.cr.aliyuncs.com/xpzouying/xiaohongshu-mcp
     container_name: xiaohongshu-mcp
@@ -16,5 +29,13 @@ services:
       - HOME=/app/data/home
       - XDG_CONFIG_HOME=/app/data/config
       - AUTH_TOKEN=${AUTH_TOKEN:-}
+      # 安全验证被拦时那条一次性链接（/verify/<token>）的公网地址前缀。
+      #
+      # 服务端不拿请求的 Host 头去猜：反代后面猜错了，用户点开是坏链接，
+      # 只会以为功能坏了。不配就退回只给相对路径，等于没有可点的链接——
+      # 而「手机浏览器打开链接扫码解封」正是这个功能的主路径。
+      #
+      # 反代带路径前缀时要连前缀一起写，例如 https://api.example.com/xhs
+      - XHS_PUBLIC_BASE_URL=${XHS_PUBLIC_BASE_URL:-}
     ports:
       - "18060:18060"
