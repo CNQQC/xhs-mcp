@@ -56,6 +56,7 @@ Copyright 2026 CNQQC
     verify_link.go
     verify_link_test.go
     verify_page.go
+    verify_throttle_test.go
     xiaohongshu/resource_block.go
     xiaohongshu/risk.go
     xiaohongshu/risk_test.go
@@ -65,6 +66,7 @@ Copyright 2026 CNQQC
     xiaohongshu/verification.go
     xiaohongshu/verification_browser_test.go
     xiaohongshu/verification_live_test.go
+    xiaohongshu/verification_test.go
     xiaohongshu/wait.go
 
 注意：把上述文件与本仓库其余部分一并使用或分发时，整体仍受 Apache-2.0 约束——

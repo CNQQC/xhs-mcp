@@ -71,10 +71,21 @@ func shrinkTimings(t *testing.T, beat, life time.Duration) {
 
 	// firstGrace 也要一起收缩。测试里的会话大多一拍心跳都不发（模拟「发了链接但
 	// 没人点开」），走的正是首次心跳前那条 90s 的宽限——不收缩它，等的就是 90 秒。
+	shrinkSplitTimings(t, beat, beat, life)
+}
+
+// shrinkSplitTimings 同上，但首拍宽限和心跳预算分开给。
+//
+// 两者取同一个值时，「一拍心跳都没来」和「来过又断了」这两条路径在测试里根本区分
+// 不开，而它们的预算差着一倍：给错哪一条，要么白占名额票，要么把用户正举着手机
+// 对着的挑战当场销毁。
+func shrinkSplitTimings(t *testing.T, grace, beat, life time.Duration) {
+	t.Helper()
+
 	oldBeat, oldLife, oldTick := verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval
 	oldGrace := verifyFirstBeatGrace
 	verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval = beat, life, 20*time.Millisecond
-	verifyFirstBeatGrace = beat
+	verifyFirstBeatGrace = grace
 	t.Cleanup(func() {
 		verifyBeatTimeout, verifySessionMaxLife, verifyBeatCheckInterval = oldBeat, oldLife, oldTick
 		verifyFirstBeatGrace = oldGrace
@@ -349,6 +360,44 @@ func TestVerifySessionSurvivesWhileBeating(t *testing.T) {
 	link.mu.Lock()
 	assert.Equal(t, verifyStatePending, link.state)
 	link.mu.Unlock()
+}
+
+// 首拍宽限和心跳预算是两套预算，不能混作一条。
+//
+// 没人打开网页时会话只是替对话里那张内联图兜底，多活一秒都是白占一张名额票
+// （一共 2 张）；而页面开过之后心跳断多半是用户切去小红书 App 扫码了，那时按短的
+// 那条拆，就是把他正举着手机对着的挑战连同 cookie jar 一起销毁。
+func TestVerifySessionFirstBeatGraceDiffersFromBeatTimeout(t *testing.T) {
+	const (
+		grace = 150 * time.Millisecond
+		beat  = 2 * time.Second
+	)
+
+	t.Run("一拍心跳都没来：按宽限拆", func(t *testing.T) {
+		shrinkSplitTimings(t, grace, beat, time.Minute)
+
+		_, _, sess, closed := newTestSession(t, blockedProbe("data:image/png;base64,AAAA"))
+
+		// 上限取在两套预算中间：真按 beatTimeout(2s) 等的话，这里必然等不到
+		waitFor(t, time.Second, func() bool { return closed.Load() == 1 })
+		assert.True(t, sess.stopped())
+	})
+
+	t.Run("收到过心跳：换成心跳预算", func(t *testing.T) {
+		shrinkSplitTimings(t, grace, beat, time.Minute)
+
+		_, _, sess, closed := newTestSession(t, blockedProbe("data:image/png;base64,AAAA"))
+
+		sess.beat() // 网页打开过，就这一拍
+
+		// 早过了首拍宽限，还没到心跳预算：这段时间正是用户在小红书 App 里扫码
+		time.Sleep(5 * grace)
+		require.False(t, sess.stopped(), "收到过心跳就不该再按首拍宽限拆")
+		require.Zero(t, closed.Load())
+
+		// 心跳预算到了照样要拆，名额票不能一直占着
+		waitFor(t, 3*time.Second, func() bool { return closed.Load() == 1 })
+	})
 }
 
 // 绝对上限兜住「页面开着没人管」：心跳一直有，也不能永远占着名额票。

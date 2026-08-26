@@ -41,7 +41,10 @@ type scanHandle struct {
 // 正常路径远用不到：cancel 之后对方最多再走一拍循环，然后关页面（自带 5s 上限）、
 // 关浏览器。给一个上限只为兜住「对方卡在 CDP 上不动了」——那时宁可短暂多占一张票，
 // 也不能让取码请求永远挂在这里。
-const scanReleaseTimeout = 10 * time.Second
+//
+// 是 var 不是 const，只为单测能把它调小（同 verify_link.go 里那几条预算）：
+// 「对方一直不还票」这条路要是按 10 秒真等，没人会去覆盖它。
+var scanReleaseTimeout = 10 * time.Second
 
 // start 结束上一个待扫码会话（如果有），登记新的，返回本次会话的序号。
 // 序号用于 finish 判断自己是不是仍然是当前会话。

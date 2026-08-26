@@ -2,7 +2,9 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -76,6 +78,68 @@ func TestLoginSessions(t *testing.T) {
 
 		assert.Len(t, seen, n, "序号必须唯一，否则 finish 会误清别人的登记")
 	})
+}
+
+// cancelPending 必须等到对方真的把名额票还回来才返回。
+//
+// 只叫一声就走的话，「先还后取」这句话根本没兑现：调用方紧接着就去排队取票，而对方
+// 还要十几秒才关得掉浏览器，这十几秒里两张票同时被持有，全局浏览器并发掉到 0，
+// 任何 search_feeds / list_feeds 都只能排队。
+func TestCancelPendingWaitsForRelease(t *testing.T) {
+	var l loginSessions
+
+	released := make(chan struct{})
+
+	var canceled atomic.Bool
+	l.start(func() { canceled.Store(true) }, released)
+
+	done := make(chan struct{})
+	go func() {
+		l.cancelPending()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("名额票还没还回来，cancelPending 不该返回")
+	case <-time.After(100 * time.Millisecond):
+	}
+	assert.True(t, canceled.Load(), "该先叫对方收尾，而不是干等着")
+
+	close(released)
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("票已经还回来了，cancelPending 应当立刻返回")
+	}
+}
+
+// 但也不能永远等下去：对方卡在 CDP 上不动时，宁可短暂多占一张票，
+// 也不能让取码请求就此挂死。
+func TestCancelPendingGivesUpAfterTimeout(t *testing.T) {
+	old := scanReleaseTimeout
+	scanReleaseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { scanReleaseTimeout = old })
+
+	var l loginSessions
+	l.start(func() {}, make(chan struct{})) // 这个通道永远不关：对方再也不还票了
+
+	start := time.Now()
+
+	done := make(chan struct{})
+	go func() {
+		l.cancelPending()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("等超时了就该放弃并继续，不能一直挂着")
+	}
+
+	assert.GreaterOrEqual(t, time.Since(start), scanReleaseTimeout, "放弃之前该等满上限")
 }
 
 // releasedNow 表示「名额票已经还回来了」。
