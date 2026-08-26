@@ -21,6 +21,7 @@ Copyright 2026 CNQQC
     errors/errors.go
     handlers_api.go
     login_session.go
+    login_session_test.go
     mcp_handlers.go
     mcp_server.go
     routes.go

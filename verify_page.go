@@ -128,8 +128,12 @@ var badge = document.getElementById("badge"), msg = document.getElementById("msg
 var sub = document.getElementById("sub"), frame = document.getElementById("frame");
 var last = "";
 
+// 服务端每一个 state 在这里都必须有一项。漏一项就会落到 LABEL.error 那条红字终态
+// 上，而 render 会跟着返回 false、永久停掉轮询——对 throttled 这种「靠页面继续拉
+// /state 才会自动重试」的状态，那等于把它自己等的那个人赶走了。
 var LABEL = {
   pending:    ["", '<span class="dot"></span>等待扫码…'],
+  throttled:  ["", '<span class="dot"></span>小红书限流中，稍后自动重试…'],
   verified:   ["ok",  "✓ 验证已通过"],
   notblocked: ["ok",  "本次未被拦截"],
   expired:    ["bad", "链接已失效"],
@@ -137,23 +141,27 @@ var LABEL = {
 };
 
 function render(s){
-  var pending = s.state === "pending";
+  // 两件事要分开判：有没有码可看，和要不要接着拉。
+  // throttled 时没有码（服务端正在退避），但必须接着拉——重试完全由这个轮询驱动，
+  // 没人拉 /state 就永远不会重开会话，链接会一直僵到 TTL 结束。
+  var showQR = s.state === "pending";
+  var keepPolling = showQR || s.state === "throttled";
   var l = LABEL[s.state] || LABEL.error;
   badge.className = "badge " + l[0];
   badge.innerHTML = l[1];
   msg.textContent = s.message || "";
-  // 终态就把扫码那一套整个收起来：留一个空相框和一句「请扫码」，
+  // 没码可看就把扫码那一套整个收起来：留一个空相框和一句「请扫码」，
   // 只会让人以为码没加载出来
-  sub.hidden = !pending;
-  frame.hidden = !pending;
-  if (pending && s.qr) {
+  sub.hidden = !showQR;
+  frame.hidden = !showQR;
+  if (showQR && s.qr) {
     if (s.qr !== last) { qr.src = s.qr; last = s.qr; }
     qr.hidden = false; ph.hidden = true;
-  } else if (pending) {
+  } else if (showQR) {
     qr.hidden = true; ph.hidden = false;
   }
-  // 终态就停轮询：再拉下去只是白发请求，服务端那边也已经没有会话了
-  return pending;
+  // 终态才停轮询：再拉下去只是白发请求，服务端那边也已经没有会话了
+  return keepPolling;
 }
 
 var timer = 0, done = false;

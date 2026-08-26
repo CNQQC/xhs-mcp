@@ -161,6 +161,13 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 
 // GetLoginQrcode 获取登录的扫码二维码
 func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
+	// 先把上一轮还挂着的待扫码会话放掉，再去排队取名额票，顺序不能反。理由和
+	// GetVerificationQrcode 那段一字不差：旧会话钉着的就是一张票，而 scans.start
+	// 排在取票之后——新会话必须先抢到另一张票，才轮得到它去关掉那个已经彻底没用的
+	// 旧会话。名额只有 2 张（XHS_BROWSER_CONCURRENCY=1 时更是必然失败），
+	// 这就是标准的 acquire-before-release 自饿死。
+	s.scans.cancelPending()
+
 	b := newBrowser(ctx)
 
 	// 这是唯一一个浏览器要活过函数返回的方法（后台等扫码），所以不能简单 defer 关闭。
@@ -171,12 +178,12 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	//
 	// page 用变量捕获而不是参数：defer 要赶在 NewPage 之前挂上，那时还没有 page。
 	var page *rod.Page
-	deferFunc := func() {
+	deferFunc := closeQuietly("登录扫码", func() {
 		if page != nil {
 			_ = page.Close()
 		}
 		b.Close()
-	}
+	})
 
 	handedOff := false
 	defer func() {
@@ -222,10 +229,24 @@ func (s *XiaohongshuService) waitScanInBackground(
 	loginAction *xiaohongshu.LoginAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
 ) {
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-	seq := s.scans.start(cancel)
+
+	// released 等到浏览器真的关掉、名额票真的还回去才关闭，供 cancelPending 等待。
+	released := make(chan struct{})
+
+	seq := s.scans.start(cancel, released)
 	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
 
 	go func() {
+		// 这是一条裸 goroutine，没有 gin.Recovery 也没有 withPanicRecovery 兜着，
+		// 漏一个 panic 出去就是整个进程退出——连带另外那张名额票和所有在途请求。
+		// 注册在最前面，于是执行时排在最后：closeBrowser 自己 panic（Chromium 先崩了
+		// 的话 rod 的 MustClose 就是 panic）也接得住。
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Errorf("等待扫码登录的后台会话 #%d 出错: %v", seq, r)
+			}
+		}()
+		defer close(released)
 		defer closeBrowser()
 		defer cancel()
 		defer s.scans.finish(seq)
@@ -244,17 +265,30 @@ func (s *XiaohongshuService) waitScanInBackground(
 	}()
 }
 
-// verifyScanTimeout 后台等扫码通过安全验证的上限。
-//
-// 比登录那边的 4 分钟短得多，两个理由：验证页自述「二维码 1 分钟失效」，过期后再扫
-// 也不会通过，继续等只是白占一张浏览器名额票；而名额一共 2 张，占满 4 分钟等于把
-// 全局并发砍掉一半。90s = 1 分钟有效期 + 30s 余量（取到码、点开图、举起手机的路上
-// 损耗）。码过期了重新调一次工具即可——每次导航本来就是一个新的 verifyUuid 挑战。
-const verifyScanTimeout = 90 * time.Second
-
 // pageCloseTimeout 关页面的上限，理由同 cookieReadTimeout：走的是 browser 那条
 // context.Background()，不设上限就可能挂在归还名额票之前。
 const pageCloseTimeout = 5 * time.Second
+
+// closeQuietly 把「关浏览器」包成绝不 panic 出去的形状。
+//
+// headless_browser.Close 走的是 rod 的 MustClose：Chromium 自己先崩了（容器 OOM
+// 先杀掉子进程是最现实的触发条件）时这一步是 panic 而不是 error。而这些 closeBrowser
+// 全都在裸 goroutine 的 defer 里执行，没有 gin.Recovery 也没有 withPanicRecovery
+// 兜着，漏出去就是整个进程退出。在构造处包一次，三条路径（登录扫码、取验证码、
+// 验证网页会话）一起受益。
+//
+// 名额票不受影响：leasedBrowser.Close 用 defer 还票，panic 也还得掉。
+func closeQuietly(what string, closeBrowser func()) func() {
+	return func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Errorf("关闭%s的浏览器时出错: %v", what, r)
+			}
+		}()
+
+		closeBrowser()
+	}
+}
 
 // GetVerificationQrcode 取安全验证二维码，透出给账号本人用小红书 App 扫。
 //
@@ -276,14 +310,14 @@ func (s *XiaohongshuService) GetVerificationQrcode(ctx context.Context) (*Verifi
 
 	// page 用变量捕获而不是参数：defer 要赶在 NewPage 之前挂上，那时还没有 page。
 	var page *rod.Page
-	deferFunc := func() {
+	deferFunc := closeQuietly("安全验证扫码", func() {
 		if page != nil {
 			// 关页面同样要有上限：Page.Close 要等 TargetDestroyed 事件回来，走的还是
 			// browser 那条 context.Background()。这一步排在归还名额票之前，挂住就是漏票。
 			_ = page.Timeout(pageCloseTimeout).Close()
 		}
 		b.Close()
-	}
+	})
 
 	handedOff := false
 	defer func() {
@@ -313,19 +347,34 @@ func (s *XiaohongshuService) GetVerificationQrcode(ctx context.Context) (*Verifi
 		}, nil
 	}
 
-	// 所有权交给后台 goroutine，由它负责关闭
-	s.waitVerifyInBackground(action, page, deferFunc, verifyScanTimeout)
+	// 发一条浏览器直达链接，并且把**这个已经打开着验证页的会话**直接挂到它上面。
+	//
+	// 「挂上去」是这条路径的全部要害。从前这里只登记 token、让网页第一次拉 /state
+	// 时自己再起一套浏览器，而那意味着「调工具拿链接 → 手机点开链接」——本功能最
+	// 主要、最自然的路径——会在十几秒内第二次导航到验证页。实测小红书对验证页本身
+	// 限流：第二次导航拿回来的页面标题还是「安全验证」，正文却变成「请求太频繁，
+	// 请一分钟后再试」，上面根本没有二维码可读，只能等到超时报错。复用之后网页第一
+	// 次拉 /state 只是给这个会话打一拍心跳，全程一次导航。
+	//
+	// 会话也不会因为没人点链接就白占名额票：首拍心跳到达之前用的是
+	// verifyFirstBeatGrace(90s)，跟从前只有内联图那条路时的等待上限一模一样。
+	link, lerr := s.links.issue()
+	if lerr != nil {
+		// 发链接失败不影响上面那张已经取到的码，会话照建：它是唯一存得下验证结果
+		// 的地方（cookie jar 在浏览器里，关掉就没了）。只是没人查得到这条链接，
+		// 于是也没人 poll 它，首拍宽限到期后自己拆掉。
+		logrus.Errorf("生成验证链接失败，本次只走内联二维码那条路: %v", lerr)
+		link = newVerifyLink()
+	}
+
+	// 所有权交给会话，由它负责关闭浏览器
+	sess := newVerifySession(s, link, &verificationProbe{action: action, page: page}, deferFunc)
 	handedOff = true
 
-	// 顺手发一条浏览器直达链接。这里只登记 token，不预先再起一个浏览器给它用——
-	// 链接可能一直没人点开，那就是白占一张名额票等到超时。真要用的时候，网页
-	// 第一次拉 /state 会自己起（见 verify_link.go 的 openSession）。
-	//
-	// 发链接失败不影响上面那张已经取到的码：内联图片那条路照样走得通。
+	link.attach(sess, qrcode.Img)
+
 	verifyURL, verifyPath := "", ""
-	if link, lerr := s.links.issue(); lerr != nil {
-		logrus.Errorf("生成验证链接失败: %v", lerr)
-	} else {
+	if lerr == nil {
 		verifyURL, verifyPath = verifyLinkAddress(link.token)
 	}
 
@@ -335,9 +384,12 @@ func (s *XiaohongshuService) GetVerificationQrcode(ctx context.Context) (*Verifi
 	}
 
 	return &VerificationQrcodeResponse{
-		Blocked:    true,
-		Message:    message,
-		Timeout:    verifyScanTimeout.String(),
+		Blocked: true,
+		Message: message,
+		// 报的是「没人打开验证网页」时的上限。打开了那条链接就改由页面心跳续命，
+		// 上限跟着变长（见 verify_link.go 的 verifyBeatTimeout / verifySessionMaxLife），
+		// 而这句话是说给「只看对话里这张内联图」的人听的。
+		Timeout:    verifyFirstBeatGrace.String(),
 		Img:        qrcode.Img,
 		PageURL:    qrcode.PageURL,
 		VerifyType: qrcode.VerifyType,
@@ -347,34 +399,13 @@ func (s *XiaohongshuService) GetVerificationQrcode(ctx context.Context) (*Verifi
 	}, nil
 }
 
-// waitVerifyInBackground 在后台等账号本人扫码通过验证，过了就存 cookie。
+// 这里从前有一个 waitVerifyInBackground：起一条不挂在任何链接上的后台 goroutine，
+// 只管等 WaitVerified、存 cookie。它已经被 verifySession 整个顶替——同一个会话现在
+// 既负责等扫码存 cookie，又负责给验证网页保鲜、换码、报状态，于是「取码」和「打开
+// 链接」共用一次导航。留着两套等于留着两条导航路径，而第二次导航必被限流。
 //
-// 存 cookie 是这条路径的重点：搜索全程不落盘，验证结果只写在这个 headless 会话的
-// cookie jar 里，浏览器一关就没了——下次请求重开浏览器又是未验证状态，用户白扫一次。
-func (s *XiaohongshuService) waitVerifyInBackground(
-	action *xiaohongshu.VerificationAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
-) {
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-	seq := s.scans.start(cancel)
-	logrus.Infof("等待扫码通过安全验证，会话 #%d，超时 %s", seq, timeout)
-
-	go func() {
-		defer closeBrowser()
-		defer cancel()
-		defer s.scans.finish(seq)
-
-		if action.WaitVerified(ctxTimeout) {
-			if err := saveCookies(page); err != nil {
-				logrus.Errorf("安全验证已通过但保存 cookies 失败，会话 #%d: %v", seq, err)
-				return
-			}
-			logrus.Infof("安全验证已通过，cookies 已保存，会话 #%d", seq)
-			return
-		}
-
-		logrus.Infof("安全验证会话 #%d 结束，未检测到验证通过（超时、二维码失效或已被新的二维码取代）", seq)
-	}()
-}
+// verifySession 的收尾比它更全：拆浏览器有 recover 兜底、名额票有 released 信号、
+// 首拍心跳前后两套预算。
 
 // notBlockedMessage 「这次没被拦」的说法。MCP/REST 和验证网页共用一套措辞。
 //
@@ -389,7 +420,12 @@ func notBlockedMessage(pageURL string) string {
 	return message + "；若原操作仍然失败，请先用 check_login_status 确认登录态，或直接重试原操作"
 }
 
-// startVerifySession 给验证网页起一个待扫码浏览器会话。
+// startVerifySession 给验证网页**重新**起一个待扫码浏览器会话。
+//
+// 这不是主路径：主路径上会话在 GetVerificationQrcode 里就建好并挂到链接上了，网页
+// 只是给它打心跳。走到这里说明那个会话已经不在了——心跳断过一次（用户切去小红书
+// App 扫码、切回来），或者上一次被限流退避到点了。也就是说这里会再导航一次验证页，
+// 而站点对验证页限流：这条路径本身就是限流的主要来源，能不走就不走。
 //
 // 返回 (nil, qrcode, nil) 表示这次访问根本没被拦，浏览器已经关掉了。
 //
@@ -406,12 +442,12 @@ func (s *XiaohongshuService) startVerifySession(
 	b := newBrowser(ctx)
 
 	var page *rod.Page
-	deferFunc := func() {
+	deferFunc := closeQuietly("验证网页会话", func() {
 		if page != nil {
 			_ = page.Timeout(pageCloseTimeout).Close()
 		}
 		b.Close()
-	}
+	})
 
 	handedOff := false
 	defer func() {

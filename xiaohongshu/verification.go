@@ -9,6 +9,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/sirupsen/logrus"
+	"github.com/xpzouying/xiaohongshu-mcp/errors"
 )
 
 // verifyProbeKeyword 触发风控用的关键词。这次导航只为让服务端决定要不要弹验证，
@@ -146,6 +147,14 @@ func readVerifyQrcode(page *rod.Page, pageURL, verifyType, verifyBiz string) (st
 		// 连同页面现场一起交出去，运维才判断得了该改选择器还是该支持另一种形态。
 		warnPageState(page, "验证页上没找到扫码二维码")
 
+		// 先问一句是不是被限流了。实测最常撞上的就是这一种，而「可能改版、可能不是
+		// 扫码验证」这两个猜测对它都不成立——把真因说成两个都不对的猜测，比不说更糟。
+		if hint := throttleText(page); hint != "" {
+			return "", fmt.Errorf("%w：验证页（verifyType=%s verifyBiz=%s，%s）现在只显示「%s」，"+
+				"页面上没有二维码可扫；这不是站点改版，约 1 分钟后重试即可",
+				errors.ErrVerifyThrottled, verifyType, verifyBiz, pageURL, hint)
+		}
+
 		return "", fmt.Errorf("验证页（verifyType=%s verifyBiz=%s，%s）上没有扫码二维码 %s"+
 			"——可能是站点改了 DOM，也可能这次不是扫码类验证: %w",
 			verifyType, verifyBiz, pageURL, verifyQrcodeSelector, err)
@@ -160,6 +169,91 @@ func readVerifyQrcode(page *rod.Page, pageURL, verifyType, verifyBiz string) (st
 	}
 
 	return *src, nil
+}
+
+// 验证页被限流时的文案特征，分成「频次」和「等会儿再来」两类。
+//
+// 实测：短时间内重复导航到验证页，标题仍是「安全验证」，正文却变成
+// 「请求太频繁，请一分钟后再试 刷新 问题反馈」，二维码元素根本不存在，等只能等到超时。
+//
+// 必须两类**共现**才算限流，不能是一个 OR 列表：中文风控页解释「为什么弹验证」时
+// 几乎必用「操作过于频繁」——滑块验证的开场白就是「您的操作过于频繁，请拖动下方
+// 滑块完成验证」——而那是一次如实上报「这次不是扫码类验证」的机会，被误判成限流
+// 就变成了让用户干等一分钟再撞一次。反过来「网络异常，请稍后重试」这种通用错误
+// 提示也不该被当成限流。一个 OR 列表里最松的那个词会决定整体判定，
+// 「宁可少判，绝不硬猜」这句话就落不了地。
+//
+// 每类内部留有余地：站点文案随时会改，所以取几个互不相同的短片段而不是整句匹配。
+var (
+	// 「频繁」已经盖住「太频繁」「过于频繁」，不必再各列一条。
+	verifyThrottleBusyHints = []string{"频繁", "too many", "rate limit"}
+
+	// 「后再试」已经盖住「稍后再试」「一分钟后再试」「过一会再试」。
+	verifyThrottleLaterHints = []string{"后再试", "稍后重试", "try again later"}
+)
+
+// isThrottleText 页面文案里有没有限流迹象：两类特征都命中才算。
+func isThrottleText(text string) bool {
+	lower := strings.ToLower(text)
+
+	return containsAny(lower, verifyThrottleBusyHints) && containsAny(lower, verifyThrottleLaterHints)
+}
+
+func containsAny(text string, hints []string) bool {
+	for _, hint := range hints {
+		if strings.Contains(text, hint) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// verifyChallengeSelector 「页面上摆着一个要人动手做的挑战」的特征元素。
+//
+// 滑块、点选这类挑战页同样以「操作过于频繁」开场，但它跟限流是两回事：限流是等一
+// 分钟就好，挑战是本工具根本不支持、必须如实上报的形态。这里存在挑战元素时一律不
+// 判限流，宁可退回那句「可能改版、也可能不是扫码类验证」。
+//
+// 不把「刷新」「问题反馈」这类按钮算进来——限流页上就有它们。
+const verifyChallengeSelector = `#captcha-div canvas, #captcha-div [class*="slider"]`
+
+// challengeProbeTimeout 探一眼有没有挑战元素的预算。这是错误路径上的补充诊断，
+// 给长了只是让一次注定失败的取码更慢；探不到就当没有。
+const challengeProbeTimeout = time.Second
+
+// throttleTextTimeout 读限流提示的单次预算。这是错误路径上的补充诊断，
+// 给长了只是让一次注定失败的取码更慢。
+const throttleTextTimeout = 2 * time.Second
+
+// throttleText 判断这次读不到二维码是不是因为被限流：是就返回归一化后的页面原文
+// （写进错误消息，运维一眼能对上是哪一句），不是就返回空串。
+//
+// 先读 #captcha-div——限流提示就落在这一块里，范围最准；它整个不在时退到 body，
+// 站点把提示挪出去也还认得出。两处都用 go-rod 原生 Text()，不注入 JS。
+func throttleText(page *rod.Page) string {
+	if _, err := page.Timeout(challengeProbeTimeout).Element(verifyChallengeSelector); err == nil {
+		// 页面上摆着一个要人动手做的挑战，那就不是限流，哪怕文案也说「操作过于频繁」。
+		return ""
+	}
+
+	for _, selector := range []string{verifyCaptchaDivSelector, "body"} {
+		el, err := page.Timeout(throttleTextTimeout).Element(selector)
+		if err != nil {
+			continue
+		}
+
+		text, err := el.Text()
+		if err != nil {
+			continue
+		}
+
+		if flat := strings.Join(strings.Fields(text), " "); isThrottleText(flat) {
+			return flat
+		}
+	}
+
+	return ""
 }
 
 // verifyPollInterval 扫码到跳转是人操作的量级，1s 足够，再密只是白发 CDP 请求。
