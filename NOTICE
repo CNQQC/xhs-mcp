@@ -18,6 +18,7 @@ Copyright 2026 CNQQC
 
     .github/CODEOWNERS
     CLAUDE.md
+    app_server.go
     README.md
     README_EN.md
     docker/README.md
@@ -61,6 +62,10 @@ Copyright 2026 CNQQC
     browser_lease.go
     browser_lease_test.go
     mcp_handlers_test.go
+    mcp_ref.go
+    mcp_ref_test.go
+    mcp_view.go
+    mcp_view_test.go
     verify_link.go
     verify_link_test.go
     verify_page.go

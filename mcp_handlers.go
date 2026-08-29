@@ -15,6 +15,22 @@ import (
 
 // MCP 工具处理函数
 
+// marshalResult 把结果序列化成一条 text 内容。what 用于拼失败时的说明。
+func marshalResult(v any, what string) *MCPToolResult {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: fmt.Sprintf("%s成功，但序列化失败: %v", what, err),
+			}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: string(data)}}}
+}
+
 // parseVisibility 从 MCP 参数中解析可见范围
 func parseVisibility(args map[string]interface{}) string {
 	v, ok := args["visibility"]
@@ -356,7 +372,11 @@ func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
 		}
 	}
 
-	jsonData, err := json.Marshal(result)
+	// 投影成只有可读内容的形状，句柄换成 ref（见 mcp_view.go）
+	jsonData, err := json.Marshal(noteListView{
+		Notes: toNoteViews(s.refs, result.Feeds),
+		Count: result.Count,
+	})
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -410,7 +430,10 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	jsonData, err := json.Marshal(result)
+	jsonData, err := json.Marshal(noteListView{
+		Notes: toNoteViews(s.refs, result.Feeds),
+		Count: result.Count,
+	})
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -538,7 +561,18 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	jsonData, err := json.Marshal(result)
+	// 投影时用请求时的 feedID/xsecToken，不用返回体里的：详情页 note.xsecToken
+	// 与请求用的那个不一定相同，而后续点赞/评论要复用的是请求用的那一个。
+	payload, ok := result.Data.(*xiaohongshu.FeedDetailResponse)
+	if !ok {
+		// 理论上到不了：service 那边固定塞的就是这个类型。真到了宁可原样返回，
+		// 返回体胖一点也好过把详情整个丢掉。
+		logrus.Warnf("详情返回体类型意外（%T），退回原样返回", result.Data)
+
+		return marshalResult(result, "获取Feed详情")
+	}
+
+	jsonData, err := json.Marshal(toNoteDetailView(s.refs, feedID, xsecToken, payload))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -598,7 +632,8 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		}
 	}
 
-	jsonData, err := json.Marshal(result)
+	jsonData, err := json.Marshal(
+		toProfileView(s.refs, result.UserBasicInfo, result.Interactions, result.Feeds))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -834,7 +869,8 @@ func (s *AppServer) handleGetMyProfile(ctx context.Context, tab string) *MCPTool
 		}
 	}
 
-	jsonData, err := json.Marshal(result)
+	jsonData, err := json.Marshal(
+		toProfileView(s.refs, result.UserBasicInfo, result.Interactions, result.Feeds))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
