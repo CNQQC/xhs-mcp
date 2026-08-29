@@ -410,7 +410,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(compactFeedsListResponseFrom(result))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -526,7 +526,18 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	compactResult, ok := compactFeedDetailResponseFrom(result)
+	if !ok {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "获取Feed详情成功，但响应结构无法精简",
+			}},
+			IsError: true,
+		}
+	}
+
+	jsonData, err := json.Marshal(compactResult)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{

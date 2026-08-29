@@ -958,12 +958,18 @@ After successful connection, you can use the following MCP tools:
     - `publish_time`: Publish time - `不限` / any (default) | `一天内` / last day | `一周内` / last week | `半年内` / last 6 months
     - `search_scope`: Search scope - `不限` / any (default) | `已看过` / viewed | `未看过` / not viewed | `已关注` / followed
     - `location`: Location - `不限` / any (default) | `同城` / same city | `附近` / nearby
+  - The response is compact: each item keeps only `id`, `xsecToken`, title, type, cover,
+    video duration, and interaction counts. User IDs/names/avatars, page-internal metadata,
+    and duplicate CDN image variants are omitted.
 - `get_feed_detail` - Get post details including interaction data and comments (required: feed_id, xsec_token)
   - `load_all_comments`: Whether to load all comments (optional), default false returns only first 10 top-level comments
   - `limit`: Limit number of top-level comments to load (optional), only effective when load_all_comments=true, default 20
   - `click_more_replies`: Whether to expand nested replies (optional), only effective when load_all_comments=true, default false
   - `reply_limit`: Skip comments with too many replies (optional), only effective when click_more_replies=true, default 10
   - `scroll_speed`: Scroll speed (optional), `slow` | `normal` | `fast`, only effective when load_all_comments=true
+  - The response is compact: it keeps the title, body, timestamps, interaction counts, image URLs,
+    one primary video URL, subtitle text, and comment IDs/content/timestamps/counts. User IDs/names,
+    avatars, IP locations, codec details, backup streams, raw subtitle URLs, and comment cursors are omitted.
 - `post_comment_to_feed` - Post comments to RedNote posts (required: feed_id, xsec_token, content)
 - `reply_comment_in_feed` - Reply to a specific comment under a note (required: feed_id, xsec_token, content, and at least one of comment_id or user_id)
 - `like_feed` - Like / unlike a note (required: feed_id, xsec_token)

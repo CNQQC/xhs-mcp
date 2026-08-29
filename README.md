@@ -1072,6 +1072,8 @@ npx mcporter list xiaohongshu-mcp
     - `publish_time`: 发布时间 - `不限`（默认）| `一天内` | `一周内` | `半年内`
     - `search_scope`: 搜索范围 - `不限`（默认）| `已看过` | `未看过` | `已关注`
     - `location`: 位置距离 - `不限`（默认）| `同城` | `附近`
+  - 返回体已做精简：每条仅保留 `id`、`xsecToken`、标题、类型、封面、视频时长和互动计数，
+    不包含用户 ID/昵称/头像、页面内部元数据或重复的图片 CDN 信息。
 - `get_feed_detail` - 获取帖子详情，包括互动数据和评论（必需：feed_id, xsec_token）
   - `load_all_comments`: 是否加载全部评论（可选），默认 false 仅返回前 10 条一级评论
   - `limit`: 限制加载的一级评论数量（可选），仅当 load_all_comments=true 时生效，默认 20
@@ -1081,6 +1083,9 @@ npx mcporter list xiaohongshu-mcp
   - 🆕 **本仓库新增**：视频笔记会额外返回 `video.subtitleText`——服务端下载好字幕、
     去掉时间轴后的完整台词文本。视频画面模型读不了，字幕能读。
   - 🆕 **本仓库新增**：笔记与评论的时间戳同时给出可读格式，模型不用自己换算
+  - 返回体已做精简：保留标题、正文、时间、互动计数、图片 URL、单个视频主链接、字幕正文，
+    以及评论 ID/正文/时间/互动计数；不包含用户 ID/昵称/头像、IP、视频编码明细、备用流、
+    字幕原始下载地址或评论游标。
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：feed_id, xsec_token, content）
 - `reply_comment_in_feed` - 回复笔记下的指定评论（必需：feed_id, xsec_token, content，以及 comment_id 或 user_id 至少一个）
 - `like_feed` - 点赞/取消点赞（必需：feed_id, xsec_token）
