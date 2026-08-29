@@ -117,7 +117,15 @@ func TestDetailViewCommentRefs(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "c2", subTarget.CommentID)
 
+	// 评论只留「谁说了什么、多少人赞」，时间和 IP 归属地不给
+	data, err := json.Marshal(v.CommentList)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "16:01", "评论不该带发布时间")
+	assert.NotContains(t, string(data), "location", "评论不该带 IP 归属地")
+	assert.Contains(t, string(data), "一级评论")
+
 	assert.True(t, v.MoreComments)
+	assert.Equal(t, "2023-12-10 16:00", v.Time, "笔记本身的发布时间要留着")
 	assert.Equal(t, 9, v.Images)
 	assert.Nil(t, v.ImageList, "没要图片时不带明细")
 }
