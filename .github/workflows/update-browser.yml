@@ -19,9 +19,9 @@ env:
 jobs:
   update:
     runs-on: ubuntu-latest
-    if: github.repository == 'xpzouying/xiaohongshu-mcp'
+    if: github.repository == 'CNQQC/xhs-mcp'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 检测最新版本（读 CDN latest 指针）
         id: check
