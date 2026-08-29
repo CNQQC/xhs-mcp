@@ -39,20 +39,20 @@ func TestIsExpandRepliesButton(t *testing.T) {
 // 一次请求滚满 defaultMaxAttempts(500) 轮。
 func TestCommentLoadConfig_normalize(t *testing.T) {
 	t.Run("空配置回落到默认", func(t *testing.T) {
-		got := CommentLoadConfig{}.normalize()
+		got := FeedDetailConfig{}.normalize()
 		assert.Equal(t, defaultMaxCommentItems, got.MaxCommentItems)
 		assert.Equal(t, defaultMaxRepliesThreshold, got.MaxRepliesThreshold)
 		assert.Equal(t, defaultScrollSpeed, got.ScrollSpeed)
 	})
 
 	t.Run("负值同样按未设置处理", func(t *testing.T) {
-		got := CommentLoadConfig{MaxCommentItems: -1, MaxRepliesThreshold: -5}.normalize()
+		got := FeedDetailConfig{MaxCommentItems: -1, MaxRepliesThreshold: -5}.normalize()
 		assert.Equal(t, defaultMaxCommentItems, got.MaxCommentItems)
 		assert.Equal(t, defaultMaxRepliesThreshold, got.MaxRepliesThreshold)
 	})
 
 	t.Run("显式值不被覆盖", func(t *testing.T) {
-		got := CommentLoadConfig{
+		got := FeedDetailConfig{
 			MaxCommentItems:     200,
 			MaxRepliesThreshold: 3,
 			ScrollSpeed:         "slow",
@@ -65,7 +65,7 @@ func TestCommentLoadConfig_normalize(t *testing.T) {
 	})
 
 	t.Run("默认配置本身已规范化且有上限", func(t *testing.T) {
-		d := DefaultCommentLoadConfig()
+		d := DefaultFeedDetailConfig()
 		assert.Equal(t, d, d.normalize())
 		assert.Greater(t, d.MaxCommentItems, 0, "默认配置不能是无上限")
 	})
@@ -73,7 +73,7 @@ func TestCommentLoadConfig_normalize(t *testing.T) {
 
 // TestCalculateMaxAttempts 规范化之后不该再落到 500 轮那条兜底上。
 func TestCalculateMaxAttempts(t *testing.T) {
-	cl := &commentLoader{config: CommentLoadConfig{}.normalize()}
+	cl := &commentLoader{config: FeedDetailConfig{}.normalize()}
 	assert.Equal(t, defaultMaxCommentItems*3, cl.calculateMaxAttempts())
 	assert.Less(t, cl.calculateMaxAttempts(), defaultMaxAttempts,
 		"默认配置的滚动轮数应远小于无上限时的 %d", defaultMaxAttempts)

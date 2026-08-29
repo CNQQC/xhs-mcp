@@ -32,9 +32,12 @@ Copyright 2026 CNQQC
     routes.go
     routes_test.go
     service.go
+    types.go
     xiaohongshu/comment_feed.go
     xiaohongshu/feed_detail.go
+    xiaohongshu/feed_detail_test.go
     xiaohongshu/feeds.go
+    xiaohongshu/feeds_test.go
     xiaohongshu/like_favorite.go
     xiaohongshu/login.go
     xiaohongshu/navigate.go
@@ -64,6 +67,7 @@ Copyright 2026 CNQQC
     xiaohongshu/resource_block.go
     xiaohongshu/risk.go
     xiaohongshu/risk_test.go
+    xiaohongshu/slim_response_test.go
     xiaohongshu/subtitle.go
     xiaohongshu/timefmt.go
     xiaohongshu/timefmt_test.go

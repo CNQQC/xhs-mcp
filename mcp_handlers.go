@@ -356,7 +356,7 @@ func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -410,7 +410,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -470,7 +470,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 	}
 
 	// 解析评论配置参数，如果未提供则使用默认值
-	config := xiaohongshu.DefaultCommentLoadConfig()
+	config := xiaohongshu.DefaultFeedDetailConfig()
 
 	if raw, ok := args["click_more_replies"]; ok {
 		switch v := raw.(type) {
@@ -513,6 +513,18 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		config.ScrollSpeed = raw
 	}
 
+	// 默认只给 imageCount，显式要了才连每张图的尺寸与地址一起返回
+	if raw, ok := args["include_images"]; ok {
+		switch v := raw.(type) {
+		case bool:
+			config.IncludeImages = v
+		case string:
+			if parsed, err := strconv.ParseBool(v); err == nil {
+				config.IncludeImages = parsed
+			}
+		}
+	}
+
 	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
 
 	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
@@ -526,7 +538,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -586,7 +598,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -822,7 +834,7 @@ func (s *AppServer) handleGetMyProfile(ctx context.Context, tab string) *MCPTool
 		}
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -888,7 +900,7 @@ func (s *AppServer) handleReplyNotification(ctx context.Context, commentID, cont
 
 // marshalMCPResult 把结果序列化成 MCP 文本内容。
 func marshalMCPResult(result any, action string) *MCPToolResult {
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	jsonData, err := json.Marshal(result)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{

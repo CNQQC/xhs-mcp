@@ -62,6 +62,7 @@ type FeedDetailArgs struct {
 	ClickMoreReplies bool   `json:"click_more_replies,omitempty" jsonschema:"【仅当load_all_comments为true时生效】是否展开二级回复。true展开子评论，false不展开（默认）"`
 	ReplyLimit       int    `json:"reply_limit,omitempty" jsonschema:"【仅当click_more_replies为true时生效】跳过回复数过多的评论。例如10表示跳过超过10条回复的，默认10"`
 	ScrollSpeed      string `json:"scroll_speed,omitempty" jsonschema:"【仅当load_all_comments为true时生效】滚动速度slow慢速、normal正常、fast快速"`
+	IncludeImages    bool   `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回。默认false，只给imageCount张数；你读不了图片内容，只有要把图片地址转交给别人时才需要true"`
 }
 
 // UserProfileArgs 获取用户主页的参数
@@ -288,7 +289,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_detail",
-			Description: "获取小红书笔记详情，返回笔记内容、图片、作者信息、互动数据（点赞/收藏/分享数）及评论列表。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看；video 里另有各编码档位的直链与字幕原始地址（均带签名、有时效）。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
+			Description: "获取小红书笔记详情，返回笔记正文、作者信息、互动数据（点赞/收藏/分享数）及评论列表。图片默认只给张数 imageCount，需要每张图的尺寸与地址时设 include_images=true。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
@@ -299,6 +300,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"feed_id":           args.FeedID,
 				"xsec_token":        args.XsecToken,
 				"load_all_comments": args.LoadAllComments,
+				"include_images":    args.IncludeImages,
 			}
 
 			// 只有当 load_all_comments=true 时，才处理其他参数

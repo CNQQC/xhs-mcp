@@ -288,41 +288,23 @@ GET /api/v1/feeds/list
       {
         "xsecToken": "security_token_value",
         "id": "feed_id_1",
-        "modelType": "note",
         "noteCard": {
           "type": "normal",
           "displayTitle": "笔记标题",
           "user": {
             "userId": "user_id_1",
-            "nickname": "用户昵称",
-            "nickName": "用户昵称",
-            "avatar": "https://example.com/avatar.jpg"
+            "nickname": "用户昵称"
           },
           "interactInfo": {
             "liked": false,
             "likedCount": "100"
-          },
-          "cover": {
-            "width": 1080,
-            "height": 1440,
-            "url": "https://example.com/cover.jpg",
-            "urlDefault": "https://example.com/cover_default.jpg",
-            "urlPre": "https://example.com/cover_pre.jpg",
-            "fileId": "file_id",
-            "infoList": [
-              {
-                "imageScene": "WB_DFT",
-                "url": "https://example.com/image.jpg"
-              }
-            ]
           },
           "video": {
             "capa": {
               "duration": 60
             }
           }
-        },
-        "index": 0
+        }
       }
     ],
     "count": 10
@@ -334,7 +316,6 @@ GET /api/v1/feeds/list
 **响应字段说明:**
 - `xsecToken`: 安全令牌，调用详情等接口时需要
 - `id`: Feed ID
-- `modelType`: 模型类型，通常为 "note"
 - `noteCard.type`: 笔记类型
 - `noteCard.video`: 视频信息（仅视频笔记有此字段）
   - `capa.duration`: 视频时长（秒）
@@ -395,14 +376,12 @@ Content-Type: application/json
       {
         "xsecToken": "security_token_value",
         "id": "feed_id_1",
-        "modelType": "note",
         "noteCard": {
           "type": "normal",
           "displayTitle": "相关笔记标题",
           "user": {
             "userId": "user_id_1",
-            "nickname": "用户昵称",
-            "avatar": "https://example.com/avatar.jpg"
+            "nickname": "用户昵称"
           },
           "interactInfo": {
             "liked": false,
@@ -412,15 +391,8 @@ Content-Type: application/json
             "commentCount": "35",
             "sharedCount": "15"
           },
-          "cover": {
-            "width": 1080,
-            "height": 1440,
-            "url": "https://example.com/cover.jpg",
-            "urlDefault": "https://example.com/cover_default.jpg"
-          },
           "video": null
-        },
-        "index": 0
+        }
       }
     ],
     "count": 5
@@ -468,6 +440,8 @@ Content-Type: application/json
   - `max_replies_threshold` (int): 回复数量阈值，超过这个数量的"更多"按钮将被跳过（0表示不跳过任何）
   - `max_comment_items` (int): 最大加载评论数（.parent-comment 数量），0表示加载所有
   - `scroll_speed` (string): 滚动速度等级，可选值：`slow`(慢速) | `normal`(正常) | `fast`(快速)
+- `include_images` (bool, 可选): 是否连每张图的尺寸与地址一起返回。默认 `false`，只返回
+  `note.imageCount` 张数；置 `true` 时额外返回 `note.imageList`
 
 **响应**
 ```json
@@ -487,9 +461,7 @@ Content-Type: application/json
         "ipLocation": "浙江",
         "user": {
           "userId": "user_id_123",
-          "nickname": "作者昵称",
-          "nickName": "作者昵称",
-          "avatar": "https://example.com/avatar.jpg"
+          "nickname": "作者昵称"
         },
         "interactInfo": {
           "liked": false,
@@ -499,21 +471,12 @@ Content-Type: application/json
           "commentCount": "50",
           "sharedCount": "20"
         },
-        "imageList": [
-          {
-            "width": 1080,
-            "height": 1440,
-            "urlDefault": "https://example.com/image1_default.jpg",
-            "urlPre": "https://example.com/image1_pre.jpg",
-            "livePhoto": false
-          }
-        ]
+        "imageCount": 9
       },
       "comments": {
         "list": [
           {
             "id": "comment_id_1",
-            "noteId": "64f1a2b3c4d5e6f7a8b9c0d1",
             "content": "评论内容",
             "likeCount": "10",
             "createTime": 1702195200000,
@@ -522,8 +485,7 @@ Content-Type: application/json
             "liked": false,
             "userInfo": {
               "userId": "commenter_id",
-              "nickname": "评论者昵称",
-              "avatar": "https://example.com/commenter_avatar.jpg"
+              "nickname": "评论者昵称"
             },
             "subCommentCount": "5",
             "subComments": [
@@ -556,7 +518,8 @@ Content-Type: application/json
 - `note.interactInfo`: 互动信息
   - `liked`: 当前用户是否已点赞
   - `collected`: 当前用户是否已收藏
-- `note.imageList[].livePhoto`: 是否为 Live Photo
+- `note.imageCount`: 图片张数。默认不返回每张图的明细；需要时在请求里带 `include_images: true`，
+  返回体会多出 `note.imageList`（每项含 `width`/`height`/`urlDefault`/`urlPre`/`livePhoto`）
 - `comments.list[].createTime`: 评论发布时间戳（毫秒）
 - `comments.list[].ipLocation`: 评论者 IP 归属地
 - `comments.list[].likeCount`: 评论点赞数
@@ -630,15 +593,13 @@ Content-Type: application/json
         {
           "xsecToken": "security_token_value",
           "id": "feed_id_1",
-          "modelType": "note",
           "noteCard": {
             "displayTitle": "用户的笔记标题",
             "interactInfo": {
               "likedCount": "100",
               "collectedCount": "50"
             }
-          },
-          "index": 0
+          }
         }
       ]
     }
@@ -705,15 +666,13 @@ GET /api/v1/user/me
         {
           "xsecToken": "security_token_value",
           "id": "feed_id_1",
-          "modelType": "note",
           "noteCard": {
             "displayTitle": "我的笔记标题",
             "interactInfo": {
               "likedCount": "50",
               "collectedCount": "30"
             }
-          },
-          "index": 0
+          }
         }
       ]
     }

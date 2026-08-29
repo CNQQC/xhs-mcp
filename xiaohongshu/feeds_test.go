@@ -53,7 +53,6 @@ func TestGetFeedsList(t *testing.T) {
 			fmt.Printf("  类型: %s\n", feed.NoteCard.Type)
 			fmt.Printf("  作者: %s (@%s)\n", feed.NoteCard.User.Nickname, feed.NoteCard.User.UserID)
 			fmt.Printf("  点赞数: %s\n", feed.NoteCard.InteractInfo.LikedCount)
-			fmt.Printf("  封面尺寸: %dx%d\n", feed.NoteCard.Cover.Width, feed.NoteCard.Cover.Height)
 			if feed.NoteCard.Type == "video" && feed.NoteCard.Video != nil {
 				fmt.Printf("  视频时长: %d秒\n", feed.NoteCard.Video.Capa.Duration)
 			}
