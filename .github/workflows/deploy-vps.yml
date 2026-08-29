@@ -1,0 +1,104 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DEPLOY_HOST: 8.130.164.28
+  DEPLOY_USER: root
+  DEPLOY_DIR: /opt/xiaohongshu-mcp
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.repository == 'CNQQC/xhs-mcp'
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Build Linux binary
+        run: |
+          VERSION="${GITHUB_SHA::7}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o /tmp/xhs-mcp-linux-amd64 .
+
+      - name: Prepare SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/deploy_key
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload artifact
+        run: |
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            /tmp/xhs-mcp-linux-amd64 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/app-${VERSION}.new"
+
+      - name: Deploy and health check
+        env:
+          DEPLOY_SCRIPT: |
+            set -euo pipefail
+            cd /opt/xiaohongshu-mcp
+            version="${VERSION:?missing version}"
+            cp -p app-patched app-previous.bak
+            chmod 755 "app-${version}.new"
+            mv "app-${version}.new" app-patched
+            docker restart xiaohongshu-mcp >/dev/null
+
+            ok=0
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:18060/health | grep -F "\"version\":\"${version}\"" >/dev/null; then
+                ok=1
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$ok" -ne 1 ]; then
+              echo "健康检查失败，回滚到上一个版本" >&2
+              cp -p app-previous.bak app-patched
+              docker restart xiaohongshu-mcp >/dev/null
+              exit 1
+            fi
+
+            echo "部署成功：${version}"
+            curl -fsS http://127.0.0.1:18060/health
+        run: |
+          printf '%s\n' "$DEPLOY_SCRIPT" | \
+            ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" "VERSION=${VERSION} bash -s"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
