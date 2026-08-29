@@ -532,14 +532,14 @@ func TestVerifyLinkAddress(t *testing.T) {
 	})
 
 	t.Run("配置了就给完整链接，末尾斜杠不重复", func(t *testing.T) {
-		t.Setenv(publicBaseURLEnv, "https://api.zhangzr.xyz/xhs/")
+		t.Setenv(publicBaseURLEnv, "https://api.example.com/xhs/")
 		full, path := verifyLinkAddress(token)
-		assert.Equal(t, "https://api.zhangzr.xyz/xhs"+verifyPathPrefix+token, full)
+		assert.Equal(t, "https://api.example.com/xhs"+verifyPathPrefix+token, full)
 		assert.Equal(t, verifyPathPrefix+token, path)
 	})
 
 	t.Run("配歪了当没配", func(t *testing.T) {
-		t.Setenv(publicBaseURLEnv, "api.zhangzr.xyz")
+		t.Setenv(publicBaseURLEnv, "api.example.com")
 		full, _ := verifyLinkAddress(token)
 		assert.Empty(t, full, "缺 scheme 的地址拼出来点不开，宁可不给")
 	})
@@ -549,10 +549,10 @@ func TestVerifyLinkAddress(t *testing.T) {
 // 而不是默默给一条错的。
 func TestVerificationLinkHint(t *testing.T) {
 	withURL := &VerificationQrcodeResponse{
-		VerifyURL:  "https://api.zhangzr.xyz/xhs/verify/abc",
+		VerifyURL:  "https://api.example.com/xhs/verify/abc",
 		VerifyPath: "/verify/abc",
 	}
-	assert.Contains(t, verificationLinkHint(withURL), "https://api.zhangzr.xyz/xhs/verify/abc")
+	assert.Contains(t, verificationLinkHint(withURL), "https://api.example.com/xhs/verify/abc")
 
 	noURL := &VerificationQrcodeResponse{VerifyPath: "/verify/abc"}
 	hint := verificationLinkHint(noURL)

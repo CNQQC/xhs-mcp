@@ -826,7 +826,7 @@ func (s *verifySession) stop() {
 // 手机浏览器发不了 Authorization 头，路径里那个 token 本身就是凭证。
 const verifyPathPrefix = "/verify/"
 
-// publicBaseURLEnv 本服务的公网基址，例如 https://api.zhangzr.xyz/xhs。
+// publicBaseURLEnv 本服务的公网基址，例如 https://api.example.com/xhs。
 const publicBaseURLEnv = "XHS_PUBLIC_BASE_URL"
 
 // verifyLinkAddress 返回可点击的完整链接和相对路径。
