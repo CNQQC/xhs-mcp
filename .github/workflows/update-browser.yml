@@ -19,7 +19,7 @@ env:
 jobs:
   update:
     runs-on: ubuntu-latest
-    if: github.repository == 'xpzouying/xiaohongshu-mcp'
+    if: github.repository == 'CNQQC/xhs-mcp'
     steps:
       - uses: actions/checkout@v7
 
