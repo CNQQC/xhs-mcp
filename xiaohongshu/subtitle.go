@@ -98,6 +98,10 @@ func fillSubtitleText(ctx context.Context, v *VideoDetail) {
 		return
 	}
 
+	// 索引取完就丢，无论下面成不成：里面是带签名有时效的 .srt 直链，客户端取不动，
+	// 留在返回体里只是噪音。用 defer 是因为下面每一步失败都直接 return。
+	defer func() { v.Subtitles = nil }()
+
 	lang, url := pickSubtitle(v.Subtitles)
 	if url == "" {
 		return

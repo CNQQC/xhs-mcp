@@ -192,20 +192,21 @@ func (s *AppServer) getFeedDetailHandler(c *gin.Context) {
 		return
 	}
 
-	var result *FeedDetailResponse
-	var err error
-
+	config := xiaohongshu.DefaultFeedDetailConfig()
 	if req.CommentConfig != nil {
-		config := xiaohongshu.CommentLoadConfig{
+		// 漏传的字段留零值，由 normalize 回落到默认（见 feed_detail.go）
+		config = xiaohongshu.FeedDetailConfig{
 			ClickMoreReplies:    req.CommentConfig.ClickMoreReplies,
 			MaxRepliesThreshold: req.CommentConfig.MaxRepliesThreshold,
 			MaxCommentItems:     req.CommentConfig.MaxCommentItems,
 			ScrollSpeed:         req.CommentConfig.ScrollSpeed,
 		}
-		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments, config)
-	} else {
-		result, err = s.xiaohongshuService.GetFeedDetail(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments)
 	}
+	// include_images 是顶层字段，传没传 comment_config 都要生效
+	config.IncludeImages = req.IncludeImages
+
+	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(
+		c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments, config)
 
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "GET_FEED_DETAIL_FAILED",

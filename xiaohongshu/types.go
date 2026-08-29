@@ -23,9 +23,11 @@ type FeedsValue struct {
 type Feed struct {
 	XsecToken string   `json:"xsecToken"`
 	ID        string   `json:"id"`
-	ModelType string   `json:"modelType"`
 	NoteCard  NoteCard `json:"noteCard"`
-	Index     int      `json:"index"`
+
+	// ModelType 只用来滤掉非笔记条目（见 onlyNotes），滤完就清空、不进返回体：
+	// 过滤之后它恒为 "note"，对调用方零信息，却每条都要占一份。
+	ModelType string `json:"modelType,omitempty"`
 }
 
 // modelTypeNote 笔记条目的 modelType 取值。
@@ -41,9 +43,12 @@ const modelTypeNote = "note"
 func onlyNotes(feeds []Feed) []Feed {
 	notes := make([]Feed, 0, len(feeds))
 	for _, f := range feeds {
-		if f.ModelType == modelTypeNote {
-			notes = append(notes, f)
+		if f.ModelType != modelTypeNote {
+			continue
 		}
+		// 循环变量是副本，清空只影响即将返回的这一份，不动调用方的原切片
+		f.ModelType = ""
+		notes = append(notes, f)
 	}
 	return notes
 }
@@ -54,16 +59,35 @@ type NoteCard struct {
 	DisplayTitle string       `json:"displayTitle"`
 	User         User         `json:"user"`
 	InteractInfo InteractInfo `json:"interactInfo"`
-	Cover        Cover        `json:"cover"`
 	Video        *Video       `json:"video,omitempty"` // 视频内容，可能为空
 }
 
-// User 表示用户信息
+// User 表示用户信息。
+//
+// 站点同时下发 nickname 和 nickName 两个拼写、值相同，只留一个；头像是 CDN 链接，
+// 调用方（大模型）看不了图，一并去掉。
 type User struct {
 	UserID   string `json:"userId"`
 	Nickname string `json:"nickname"`
-	NickName string `json:"nickName"`
-	Avatar   string `json:"avatar"`
+}
+
+// UnmarshalJSON 昵称两种拼写都认。
+//
+// 列表页实测给的是 nickname，但站点两个拼写都在用，别的接口只给驼峰时不能静默丢名字。
+func (u *User) UnmarshalJSON(data []byte) error {
+	type alias User // 借别名避免递归调用本方法
+	aux := struct {
+		NickNameCamel string `json:"nickName"`
+		*alias
+	}{alias: (*alias)(u)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if u.Nickname == "" {
+		u.Nickname = aux.NickNameCamel
+	}
+	return nil
 }
 
 // InteractInfo 表示互动信息
@@ -76,23 +100,6 @@ type InteractInfo struct {
 
 	CollectedCount string `json:"collectedCount"`
 	Collected      bool   `json:"collected"`
-}
-
-// Cover 表示封面信息
-type Cover struct {
-	Width      int         `json:"width"`
-	Height     int         `json:"height"`
-	URL        string      `json:"url"`
-	FileID     string      `json:"fileId"`
-	URLPre     string      `json:"urlPre"`
-	URLDefault string      `json:"urlDefault"`
-	InfoList   []ImageInfo `json:"infoList"`
-}
-
-// ImageInfo 表示图片信息
-type ImageInfo struct {
-	ImageScene string `json:"imageScene"`
-	URL        string `json:"url"`
 }
 
 // Video 表示视频信息
@@ -123,20 +130,32 @@ type FeedDetail struct {
 	Time      int64  `json:"time"`
 	// TimeText 是 Time 的可读形式（东八区），站点原始数据里没有，由服务端回填。
 	// 裸时间戳交给大模型自己换算，常见的错法是漏掉毫秒或忽略时区。
-	TimeText     string            `json:"timeText,omitempty"`
-	IPLocation   string            `json:"ipLocation"`
-	User         User              `json:"user"`
-	InteractInfo InteractInfo      `json:"interactInfo"`
-	ImageList    []DetailImageInfo `json:"imageList"`
-	Video        *VideoDetail      `json:"video,omitempty"` // 视频笔记才有，图文笔记为 nil
+	TimeText     string       `json:"timeText,omitempty"`
+	IPLocation   string       `json:"ipLocation"`
+	User         User         `json:"user"`
+	InteractInfo InteractInfo `json:"interactInfo"`
+
+	// ImageCount 图片张数。图文笔记有几张图是内容信息（"九图笔记"），
+	// 而每张图的宽高和 CDN 地址不是——调用方看不了图，却要为此付一堆长 URL。
+	ImageCount int `json:"imageCount"`
+	// ImageList 每张图的尺寸与地址，默认不返回。
+	// 确实要拿图时显式请求（MCP 的 include_images / REST 的 include_images）。
+	ImageList []DetailImageInfo `json:"imageList,omitempty"`
+
+	Video *VideoDetail `json:"video,omitempty"` // 视频笔记才有，图文笔记为 nil
 }
 
-// VideoDetail 详情页的视频信息，按页面 note.video 原样映射，不替调用方挑档位。
+// VideoDetail 详情页的视频信息。
+//
+// 从前是按页面 note.video 原样映射，于是 media.stream 里每档转码（h264/h265/av1/h266）
+// 的 28 个字段全都进了返回体——带签名的直链、备份直链，还有 vmaf/psnr/ssim 这类
+// 小红书内部的转码质量指标。调用方播不了视频，这些一个都用不上，却是整个返回体
+// 最大的一块。现在只留两样：时长，和字幕正文。
 type VideoDetail struct {
-	Image VideoImage      `json:"image"`
-	Capa  VideoCapability `json:"capa"`
-	Media VideoMedia      `json:"media"`
-	// Subtitles 字幕，从 mediaV2 里解出来（见 UnmarshalJSON）。key 为语言，另有 source 表示原始语种。
+	Capa VideoCapability `json:"capa"`
+	// Subtitles 字幕索引，从 mediaV2 里解出来（见 UnmarshalJSON）。key 为语言。
+	// 只用来挑一条去下正文，取完即清空、不进返回体：里面是带签名有时效的 .srt 直链，
+	// 客户端拿到也取不动，而正文已经在 SubtitleText 里了。
 	Subtitles map[string][]VideoSubtitle `json:"subtitles,omitempty"`
 
 	// SubtitleText 字幕正文，已去掉序号与时间轴。
@@ -177,69 +196,6 @@ func (v *VideoDetail) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// VideoImage 视频的首帧与缩略图，只有 fileid，需自行拼 CDN 地址。
-type VideoImage struct {
-	FirstFrameFileID string `json:"firstFrameFileid"`
-	ThumbnailFileID  string `json:"thumbnailFileid"`
-}
-
-// VideoMedia 视频媒体信息。
-type VideoMedia struct {
-	VideoID int64     `json:"videoId"`
-	Video   VideoMeta `json:"video"`
-	// Stream 按编码名分桶：h264/h265/av1/h266，同一编码下可有多档分辨率，也可能是空数组。
-	// 用 map 而不是写死字段，是为了小红书新增编码时不会被静默丢掉。
-	Stream map[string][]VideoStream `json:"stream"`
-}
-
-// VideoMeta 视频的整体信息。注意 Duration 是秒（四舍五入），精确时长看 VideoStream.Duration。
-type VideoMeta struct {
-	Duration    int    `json:"duration"`
-	MD5         string `json:"md5"`
-	HDRType     int    `json:"hdrType"`
-	DRMType     int    `json:"drmType"`
-	StreamTypes []int  `json:"streamTypes"`
-	BizName     int    `json:"bizName"`
-	BizID       string `json:"bizId"`
-}
-
-// VideoStream 单档视频流。
-// MasterURL 带 sign 与 t（过期时间戳）签名参数，有时效；BackupURLs 不带签名。
-type VideoStream struct {
-	MasterURL  string   `json:"masterUrl"`
-	BackupURLs []string `json:"backupUrls"`
-
-	Format      string `json:"format"`
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
-	Duration    int    `json:"duration"` // 毫秒
-	Size        int64  `json:"size"`     // 字节
-	FPS         int    `json:"fps"`
-	Rotate      int    `json:"rotate"`
-	QualityType string `json:"qualityType"`
-	StreamType  int    `json:"streamType"`
-	StreamDesc  string `json:"streamDesc"`
-	HDRType     int    `json:"hdrType"`
-
-	VideoCodec    string `json:"videoCodec"`
-	VideoBitrate  int    `json:"videoBitrate"`
-	VideoDuration int    `json:"videoDuration"`
-	AvgBitrate    int    `json:"avgBitrate"`
-
-	AudioCodec    string  `json:"audioCodec"`
-	AudioBitrate  int     `json:"audioBitrate"`
-	AudioDuration int     `json:"audioDuration"`
-	AudioChannels int     `json:"audioChannels"`
-	Volume        float64 `json:"volume"`
-
-	// 转码质量指标，小红书内部用
-	VMAF          float64 `json:"vmaf"`
-	PSNR          float64 `json:"psnr"`
-	SSIM          float64 `json:"ssim"`
-	Weight        int     `json:"weight"`
-	DefaultStream int     `json:"defaultStream"`
-}
-
 // VideoSubtitle 字幕文件，URL 为 .srt 直链，同样带签名有时效。
 type VideoSubtitle struct {
 	URL      string `json:"url"`
@@ -266,8 +222,9 @@ type CommentList struct {
 
 // Comment 表示单条评论
 type Comment struct {
-	ID         string `json:"id"`
-	NoteID     string `json:"noteId"`
+	ID string `json:"id"`
+	// 这里从前有一个 noteId：一次详情请求里所有评论的 noteId 都相同，
+	// 而请求本身就是按 feed_id 发的，逐条重复等于白占位置。
 	Content    string `json:"content"`
 	LikeCount  string `json:"likeCount"`
 	CreateTime int64  `json:"createTime"`

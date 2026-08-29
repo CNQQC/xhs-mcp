@@ -36,11 +36,15 @@ const (
 
 // ========== 数据结构 ==========
 
-type CommentLoadConfig struct {
+type FeedDetailConfig struct {
 	ClickMoreReplies    bool
 	MaxRepliesThreshold int
 	MaxCommentItems     int
 	ScrollSpeed         string
+
+	// IncludeImages 是否连每张图的尺寸与地址一起返回。默认 false，只报张数。
+	// 零值即默认行为，所以 normalize 不必管它。
+	IncludeImages bool
 }
 
 // 未显式指定时的默认值。
@@ -50,8 +54,8 @@ const (
 	defaultScrollSpeed         = "normal"
 )
 
-func DefaultCommentLoadConfig() CommentLoadConfig {
-	return CommentLoadConfig{
+func DefaultFeedDetailConfig() FeedDetailConfig {
+	return FeedDetailConfig{
 		ClickMoreReplies:    false,
 		MaxRepliesThreshold: defaultMaxRepliesThreshold,
 		MaxCommentItems:     defaultMaxCommentItems,
@@ -68,7 +72,7 @@ func DefaultCommentLoadConfig() CommentLoadConfig {
 // handler 里，两条路径和以后新增的调用方都能覆盖到。
 //
 // 真要拉更多评论，显式传一个大的 MaxCommentItems。
-func (c CommentLoadConfig) normalize() CommentLoadConfig {
+func (c FeedDetailConfig) normalize() FeedDetailConfig {
 	if c.MaxCommentItems <= 0 {
 		c.MaxCommentItems = defaultMaxCommentItems
 	}
@@ -91,11 +95,11 @@ func NewFeedDetailAction(page *rod.Page) *FeedDetailAction {
 
 // ========== 主要业务逻辑 ==========
 
-func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config CommentLoadConfig) (*FeedDetailResponse, error) {
+func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	return f.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
 }
 
-func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config CommentLoadConfig) (*FeedDetailResponse, error) {
+func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	config = config.normalize()
 
 	page := f.page.Context(ctx).Timeout(10 * time.Minute)
@@ -171,14 +175,27 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	// 页面里只有带签名的 .srt 链接，正文得另外下一次，失败不影响详情本身。
 	fillSubtitleText(ctx, resp.Note.Video)
 
+	applyImagePolicy(&resp.Note, config.IncludeImages)
+
 	return resp, nil
+}
+
+// applyImagePolicy 记下图片张数，并按需决定要不要留下每张图的明细。
+//
+// "这是九图笔记"是内容信息，每张图的宽高和 CDN 地址不是——调用方看不了图，
+// 却要为此付一堆长 URL。抽成函数是为了不起浏览器就能测这条规则。
+func applyImagePolicy(note *FeedDetail, includeImages bool) {
+	note.ImageCount = len(note.ImageList)
+	if !includeImages {
+		note.ImageList = nil
+	}
 }
 
 // ========== 评论加载器 ==========
 
 type commentLoader struct {
 	page   *rod.Page
-	config CommentLoadConfig
+	config FeedDetailConfig
 	stats  *loadStats
 	state  *loadState
 }
@@ -195,7 +212,7 @@ type loadState struct {
 	stagnantChecks int
 }
 
-func (f *FeedDetailAction) loadAllCommentsWithConfig(ctx context.Context, page *rod.Page, config CommentLoadConfig) error {
+func (f *FeedDetailAction) loadAllCommentsWithConfig(ctx context.Context, page *rod.Page, config FeedDetailConfig) error {
 	loader := &commentLoader{
 		page:   page,
 		config: config,

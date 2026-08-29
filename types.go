@@ -52,6 +52,9 @@ type FeedDetailRequest struct {
 	XsecToken       string             `json:"xsec_token" binding:"required"`
 	LoadAllComments bool               `json:"load_all_comments,omitempty"`
 	CommentConfig   *CommentLoadConfig `json:"comment_config,omitempty"`
+	// IncludeImages 为 true 时才返回 imageList（每张图的尺寸与地址）。
+	// 默认只返回 imageCount，见 xiaohongshu/types.go 的 FeedDetail。
+	IncludeImages bool `json:"include_images,omitempty"`
 }
 
 type SearchFeedsRequest struct {

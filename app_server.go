@@ -20,6 +20,10 @@ type AppServer struct {
 	router             *gin.Engine
 	httpServer         *http.Server
 	authToken          string
+
+	// refs MCP 返回体里那些短句柄的登记表，见 mcp_ref.go。只服务 MCP 一条路，
+	// REST 调用方拿到的仍是原始 id 与 xsec_token。
+	refs *refTable
 }
 
 // NewAppServer 创建新的应用服务器实例
@@ -27,6 +31,7 @@ func NewAppServer(xiaohongshuService *XiaohongshuService, authToken string) *App
 	appServer := &AppServer{
 		xiaohongshuService: xiaohongshuService,
 		authToken:          authToken,
+		refs:               newRefTable(),
 	}
 
 	// 初始化 MCP Server（需要在创建 appServer 之后，因为工具注册需要访问 appServer）

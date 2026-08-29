@@ -18,6 +18,7 @@ Copyright 2026 CNQQC
 
     .github/CODEOWNERS
     CLAUDE.md
+    app_server.go
     README.md
     README_EN.md
     docker/README.md
@@ -32,9 +33,12 @@ Copyright 2026 CNQQC
     routes.go
     routes_test.go
     service.go
+    types.go
     xiaohongshu/comment_feed.go
     xiaohongshu/feed_detail.go
+    xiaohongshu/feed_detail_test.go
     xiaohongshu/feeds.go
+    xiaohongshu/feeds_test.go
     xiaohongshu/like_favorite.go
     xiaohongshu/login.go
     xiaohongshu/navigate.go
@@ -58,12 +62,17 @@ Copyright 2026 CNQQC
     browser_lease.go
     browser_lease_test.go
     mcp_handlers_test.go
+    mcp_ref.go
+    mcp_ref_test.go
+    mcp_view.go
+    mcp_view_test.go
     verify_link.go
     verify_link_test.go
     verify_page.go
     xiaohongshu/resource_block.go
     xiaohongshu/risk.go
     xiaohongshu/risk_test.go
+    xiaohongshu/slim_response_test.go
     xiaohongshu/subtitle.go
     xiaohongshu/timefmt.go
     xiaohongshu/timefmt_test.go

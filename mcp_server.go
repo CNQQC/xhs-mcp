@@ -55,19 +55,22 @@ type FilterOption struct {
 
 // FeedDetailArgs 获取Feed详情的参数
 type FeedDetailArgs struct {
-	FeedID           string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
-	XsecToken        string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref              string `json:"ref,omitempty" jsonschema:"笔记的 ref，取自 search_feeds / list_feeds 返回的 ref 字段。传了 ref 就不用再传 feed_id 和 xsec_token"`
+	FeedID           string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken        string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
 	LoadAllComments  bool   `json:"load_all_comments,omitempty" jsonschema:"是否加载全部评论。false仅返回前10条一级评论（默认），true滚动加载更多评论"`
 	Limit            int    `json:"limit,omitempty" jsonschema:"【仅当load_all_comments为true时生效】限制加载的一级评论数量。例如20表示最多加载20条，默认20"`
 	ClickMoreReplies bool   `json:"click_more_replies,omitempty" jsonschema:"【仅当load_all_comments为true时生效】是否展开二级回复。true展开子评论，false不展开（默认）"`
 	ReplyLimit       int    `json:"reply_limit,omitempty" jsonschema:"【仅当click_more_replies为true时生效】跳过回复数过多的评论。例如10表示跳过超过10条回复的，默认10"`
 	ScrollSpeed      string `json:"scroll_speed,omitempty" jsonschema:"【仅当load_all_comments为true时生效】滚动速度slow慢速、normal正常、fast快速"`
+	IncludeImages    bool   `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回。默认false，只给imageCount张数；你读不了图片内容，只有要把图片地址转交给别人时才需要true"`
 }
 
 // UserProfileArgs 获取用户主页的参数
 type UserProfileArgs struct {
-	UserID    string `json:"user_id" jsonschema:"小红书用户ID，从Feed列表获取"`
-	XsecToken string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref       string `json:"ref,omitempty" jsonschema:"ref，取自任意笔记或评论的 ref 字段——会翻到那条笔记的作者、或那条评论的评论者的主页。传了 ref 就不用再传 user_id 和 xsec_token"`
+	UserID    string `json:"user_id,omitempty" jsonschema:"小红书用户ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 user_id 一起给"`
 	Tab       string `json:"tab,omitempty" jsonschema:"主页 tab: note(笔记,默认)|fav(收藏)|liked(点赞)。收藏和点赞可能被对方设为不公开"`
 }
 
@@ -78,15 +81,17 @@ type MyProfileArgs struct {
 
 // PostCommentArgs 发表评论的参数
 type PostCommentArgs struct {
-	FeedID    string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
-	XsecToken string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref       string `json:"ref,omitempty" jsonschema:"笔记的 ref，取自 search_feeds / list_feeds 返回的 ref 字段。传了 ref 就不用再传 feed_id 和 xsec_token"`
+	FeedID    string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
 	Content   string `json:"content" jsonschema:"评论内容"`
 }
 
 // ReplyCommentArgs 回复评论的参数
 type ReplyCommentArgs struct {
-	FeedID    string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
-	XsecToken string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref       string `json:"ref,omitempty" jsonschema:"评论的 ref，取自 get_feed_detail 返回的 commentList[].ref。传了 ref 就不用再传 feed_id / xsec_token / comment_id / user_id"`
+	FeedID    string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
 	CommentID string `json:"comment_id,omitempty" jsonschema:"目标评论ID，从评论列表获取"`
 	UserID    string `json:"user_id,omitempty" jsonschema:"目标评论用户ID，从评论列表获取"`
 	Content   string `json:"content" jsonschema:"回复内容"`
@@ -94,15 +99,17 @@ type ReplyCommentArgs struct {
 
 // LikeFeedArgs 点赞参数
 type LikeFeedArgs struct {
-	FeedID    string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
-	XsecToken string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref       string `json:"ref,omitempty" jsonschema:"笔记的 ref，取自 search_feeds / list_feeds 返回的 ref 字段。传了 ref 就不用再传 feed_id 和 xsec_token"`
+	FeedID    string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
 	Unlike    bool   `json:"unlike,omitempty" jsonschema:"是否取消点赞，true为取消点赞，false或未设置则为点赞"`
 }
 
 // FavoriteFeedArgs 收藏参数
 type FavoriteFeedArgs struct {
-	FeedID     string `json:"feed_id" jsonschema:"小红书笔记ID，从Feed列表获取"`
-	XsecToken  string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	Ref        string `json:"ref,omitempty" jsonschema:"笔记的 ref，取自 search_feeds / list_feeds 返回的 ref 字段。传了 ref 就不用再传 feed_id 和 xsec_token"`
+	FeedID     string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
+	XsecToken  string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
 	Unfavorite bool   `json:"unfavorite,omitempty" jsonschema:"是否取消收藏，true为取消收藏，false或未设置则为收藏"`
 }
 
@@ -256,7 +263,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_feeds",
-			Description: "获取首页 Feeds 列表",
+			Description: "获取首页 Feeds 列表。每条只给能读的内容（标题、作者、点赞/评论/收藏数，视频还有时长），外加一个 ref——想看详情、点赞、收藏、评论、翻作者主页，把那条的 ref 传给对应工具即可，不必再传 id 和 token。ref 在服务重启后失效，失效了重新调本工具取一份新的。",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Feeds",
 				ReadOnlyHint: true,
@@ -272,7 +279,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "search_feeds",
-			Description: "搜索小红书内容（需要已登录）",
+			Description: "搜索小红书内容（需要已登录）。每条只给能读的内容（标题、作者、点赞/评论/收藏数，视频还有时长），外加一个 ref——想看详情、点赞、收藏、评论、翻作者主页，把那条的 ref 传给对应工具即可，不必再传 id 和 token。ref 在服务重启后失效，失效了重新调本工具取一份新的。",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Search Feeds",
 				ReadOnlyHint: true,
@@ -288,17 +295,23 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_detail",
-			Description: "获取小红书笔记详情，返回笔记内容、图片、作者信息、互动数据（点赞/收藏/分享数）及评论列表。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看；video 里另有各编码档位的直链与字幕原始地址（均带签名、有时效）。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
+			Description: "获取小红书笔记详情，返回笔记正文、作者、发布时间与 IP 归属地、互动数据（点赞/评论/收藏数）及评论列表。笔记和每条评论都带 ref：回复某条评论时把该评论的 ref 传给 reply_comment_in_feed 即可。图片默认只给张数 imageCount，需要每张图的尺寸与地址时设 include_images=true。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
 			},
 		},
 		withPanicRecovery("get_feed_detail", func(ctx context.Context, req *mcp.CallToolRequest, args FeedDetailArgs) (*mcp.CallToolResult, any, error) {
+			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
 			argsMap := map[string]interface{}{
-				"feed_id":           args.FeedID,
-				"xsec_token":        args.XsecToken,
+				"feed_id":           target.FeedID,
+				"xsec_token":        target.XsecToken,
 				"load_all_comments": args.LoadAllComments,
+				"include_images":    args.IncludeImages,
 			}
 
 			// 只有当 load_all_comments=true 时，才处理其他参数
@@ -333,16 +346,21 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "user_profile",
-			Description: "获取指定的小红书用户主页，返回用户基本信息，关注、粉丝、获赞量，以及指定 tab 下的内容。tab 可选 note(笔记,默认)、fav(收藏)、liked(点赞)，后两者可能被对方设为不公开",
+			Description: "获取指定的小红书用户主页，返回昵称、小红书号、简介、IP 归属地，关注/粉丝/获赞量，以及指定 tab 下的笔记（同样带 ref）。传任意笔记或评论的 ref 即可翻到对应作者的主页。tab 可选 note(笔记,默认)、fav(收藏)、liked(点赞)，后两者可能被对方设为不公开",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "User Profile",
 				ReadOnlyHint: true,
 			},
 		},
 		withPanicRecovery("user_profile", func(ctx context.Context, req *mcp.CallToolRequest, args UserProfileArgs) (*mcp.CallToolResult, any, error) {
+			target, ok := appServer.resolveUser(args.Ref, args.UserID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
 			argsMap := map[string]interface{}{
-				"user_id":    args.UserID,
-				"xsec_token": args.XsecToken,
+				"user_id":    target.UserID,
+				"xsec_token": target.XsecToken,
 				"tab":        args.Tab,
 			}
 			result := appServer.handleUserProfile(ctx, argsMap)
@@ -361,9 +379,14 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("post_comment_to_feed", func(ctx context.Context, req *mcp.CallToolRequest, args PostCommentArgs) (*mcp.CallToolResult, any, error) {
+			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
 			argsMap := map[string]interface{}{
-				"feed_id":    args.FeedID,
-				"xsec_token": args.XsecToken,
+				"feed_id":    target.FeedID,
+				"xsec_token": target.XsecToken,
 				"content":    args.Content,
 			}
 			result := appServer.handlePostComment(ctx, argsMap)
@@ -382,18 +405,30 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("reply_comment_in_feed", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyCommentArgs) (*mcp.CallToolResult, any, error) {
-			if args.CommentID == "" && args.UserID == "" {
+			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
+			// 评论 ref 自带 comment_id 和评论者 user_id，两者都从 ref 取；
+			// 没走 ref 的老路仍然自己传。
+			commentID, userID := args.CommentID, args.UserID
+			if args.Ref != "" {
+				commentID, userID = target.CommentID, target.UserID
+			}
+
+			if commentID == "" && userID == "" {
 				return &mcp.CallToolResult{
 					IsError: true,
-					Content: []mcp.Content{&mcp.TextContent{Text: "缺少 comment_id 或 user_id"}},
+					Content: []mcp.Content{&mcp.TextContent{Text: "缺少 comment_id 或 user_id（用 get_feed_detail 里 commentList[].ref 更省事）"}},
 				}, nil, nil
 			}
 
 			argsMap := map[string]interface{}{
-				"feed_id":    args.FeedID,
-				"xsec_token": args.XsecToken,
-				"comment_id": args.CommentID,
-				"user_id":    args.UserID,
+				"feed_id":    target.FeedID,
+				"xsec_token": target.XsecToken,
+				"comment_id": commentID,
+				"user_id":    userID,
 				"content":    args.Content,
 			}
 			result := appServer.handleReplyComment(ctx, argsMap)
@@ -437,9 +472,14 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("like_feed", func(ctx context.Context, req *mcp.CallToolRequest, args LikeFeedArgs) (*mcp.CallToolResult, any, error) {
+			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
 			argsMap := map[string]interface{}{
-				"feed_id":    args.FeedID,
-				"xsec_token": args.XsecToken,
+				"feed_id":    target.FeedID,
+				"xsec_token": target.XsecToken,
 				"unlike":     args.Unlike,
 			}
 			result := appServer.handleLikeFeed(ctx, argsMap)
@@ -458,9 +498,14 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("favorite_feed", func(ctx context.Context, req *mcp.CallToolRequest, args FavoriteFeedArgs) (*mcp.CallToolResult, any, error) {
+			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
+			if !ok {
+				return convertToMCPResult(refError()), nil, nil
+			}
+
 			argsMap := map[string]interface{}{
-				"feed_id":    args.FeedID,
-				"xsec_token": args.XsecToken,
+				"feed_id":    target.FeedID,
+				"xsec_token": target.XsecToken,
 				"unfavorite": args.Unfavorite,
 			}
 			result := appServer.handleFavoriteFeed(ctx, argsMap)
