@@ -61,6 +61,18 @@ type pendingFilter struct {
 	option string // 选项文本
 }
 
+// splitNoteTypeFilters 将已经移出筛选面板的「笔记类型」单独交给顶部标签处理。
+func splitNoteTypeFilters(pending []pendingFilter) (noteType, panel []pendingFilter) {
+	for _, pf := range pending {
+		if pf.group == "笔记类型" {
+			noteType = append(noteType, pf)
+			continue
+		}
+		panel = append(panel, pf)
+	}
+	return noteType, panel
+}
+
 // collectFilters 把入参展开成待应用的筛选项，顺便校验取值。
 //
 // 校验放在这里是为了在打开浏览器之前就挡掉写错的值——否则要等导航、悬停、
@@ -141,53 +153,76 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if len(pending) > 0 {
-		// 先用带独立预算的克隆探一下筛选按钮：首屏正常、humanize.Delay 期间才被跳到
-		// 验证页时，裸 MustElement 会一路等到页面 deadline 才 panic。
-		if _, err := page.Timeout(probeTimeout).Element(`div.filter`); err != nil {
-			return nil, riskOrError(page, "未找到筛选按钮 div.filter", err)
-		}
-
-		// 确认存在后从主 page 上重新取一次：从 Timeout 克隆上取到的元素连同它的 Mouse
-		// 只剩探测那点预算，后面的悬停和点击会跟着一起短命。
-		filterButton, err := page.Element(`div.filter`)
-		if err != nil {
-			return nil, riskOrError(page, "读取筛选按钮 div.filter 失败", err)
-		}
-
-		// 悬停在筛选按钮上展开面板
-		if err := humanize.Hover(filterButton); err != nil {
-			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
-		}
-		humanize.Delay(ctx, humanize.BeforeClick)
-
-		// 等待筛选面板出现，同样给独立预算
-		if err := page.Timeout(probeTimeout).Wait(rod.Eval(filterPanelJS)); err != nil {
-			return nil, riskOrError(page, "筛选面板未出现", err)
-		}
-
-		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位。上面的注水轮询保证了
-		// before 是一批真实的 id：waitFeedsChanged 的退出条件是 now != "" && now != before，
-		// before 为空时第一次读到非空就返回，等于没等筛选生效。
-		before := readFeedIDs(page)
-
-		// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等；
-		// ClickNoWait 移进面板内选项（维持 hover、面板不关）再点。
-		for _, pf := range pending {
-			option, err := findFilterOption(page, pf)
+		// 搜索页已将「笔记类型」从 hover 筛选面板移到顶部标签（全部 / 图文 / 视频）。
+		// 先走标签，剩余条件仍在面板里选择；否则 note_type 会在面板中报「没有笔记类型组」。
+		noteTypeFilters, panelFilters := splitNoteTypeFilters(pending)
+		for _, pf := range noteTypeFilters {
+			before := readFeedIDs(page)
+			option, err := findNoteTypeTab(page, pf.option)
 			if err != nil {
 				return nil, err
 			}
+
 			humanize.Delay(ctx, humanize.BeforeClick)
 			if err := humanize.ClickNoWait(option); err != nil {
-				return nil, fmt.Errorf("点击筛选选项「%s」失败: %w", pf.option, err)
+				return nil, fmt.Errorf("点击笔记类型「%s」失败: %w", pf.option, err)
 			}
+			waitFeedsChanged(page, before, 15*time.Second)
 		}
 
-		waitFeedsChanged(page, before, 15*time.Second)
+		if len(panelFilters) == 0 {
+			if result, err = readSearchFeeds(page); err != nil {
+				return nil, err
+			}
+		} else {
+			// 先用带独立预算的克隆探一下筛选按钮：首屏正常、humanize.Delay 期间才被跳到
+			// 验证页时，裸 MustElement 会一路等到页面 deadline 才 panic。
+			if _, err := page.Timeout(probeTimeout).Element(`div.filter`); err != nil {
+				return nil, riskOrError(page, "未找到筛选按钮 div.filter", err)
+			}
 
-		// 筛选后是另一批数据，首屏那次读到的作废
-		if result, err = readSearchFeeds(page); err != nil {
-			return nil, err
+			// 确认存在后从主 page 上重新取一次：从 Timeout 克隆上取到的元素连同它的 Mouse
+			// 只剩探测那点预算，后面的悬停和点击会跟着一起短命。
+			filterButton, err := page.Element(`div.filter`)
+			if err != nil {
+				return nil, riskOrError(page, "读取筛选按钮 div.filter 失败", err)
+			}
+
+			// 悬停在筛选按钮上展开面板
+			if err := humanize.Hover(filterButton); err != nil {
+				return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
+			}
+			humanize.Delay(ctx, humanize.BeforeClick)
+
+			// 等待筛选面板出现，同样给独立预算
+			if err := page.Timeout(probeTimeout).Wait(rod.Eval(filterPanelJS)); err != nil {
+				return nil, riskOrError(page, "筛选面板未出现", err)
+			}
+
+			// 记下筛选前的结果，用来判断筛选后的数据什么时候到位。上面的注水轮询保证了
+			// before 是一批真实的 id：waitFeedsChanged 的退出条件是 now != "" && now != before，
+			// before 为空时第一次读到非空就返回，等于没等筛选生效。
+			before := readFeedIDs(page)
+
+			// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等；
+			// ClickNoWait 移进面板内选项（维持 hover、面板不关）再点。
+			for _, pf := range panelFilters {
+				option, err := findFilterOption(page, pf)
+				if err != nil {
+					return nil, err
+				}
+				humanize.Delay(ctx, humanize.BeforeClick)
+				if err := humanize.ClickNoWait(option); err != nil {
+					return nil, fmt.Errorf("点击筛选选项「%s」失败: %w", pf.option, err)
+				}
+			}
+
+			waitFeedsChanged(page, before, 15*time.Second)
+
+			// 筛选后是另一批数据，首屏那次读到的作废
+			if result, err = readSearchFeeds(page); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -238,6 +273,56 @@ func logSearchYield(page *rod.Page, keyword string, raw, notes int) {
 
 // filterPanelJS 筛选面板是否已经展开。
 const filterPanelJS = `() => document.querySelector('div.filter-panel') !== null`
+
+// noteTypeTabText 将接口参数映射到搜索页顶部的内容标签。
+var noteTypeTabText = map[string]string{
+	"不限": "全部",
+	"视频": "视频",
+	"图文": "图文",
+}
+
+// noteTypeTabJS 在筛选按钮附近的标签组中找「全部 / 图文 / 视频」。限定为包含筛选按钮
+// 的最小父容器，避免点到左侧频道栏或搜索结果正文中的同名文本。
+const noteTypeTabJS = `(wanted => {
+	const filter = document.querySelector('div.filter');
+	if (!filter) return null;
+
+	const labels = new Set(['全部', '图文', '视频']);
+	const textOf = el => (el.textContent || '').trim();
+	const visible = el => {
+		const style = window.getComputedStyle(el);
+		const rect = el.getBoundingClientRect();
+		return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+	};
+
+	for (let scope = filter.parentElement; scope && scope !== document.body; scope = scope.parentElement) {
+		const items = [...scope.querySelectorAll('*')].filter(el =>
+			el.children.length === 0 && labels.has(textOf(el)) && visible(el));
+		if (new Set(items.map(textOf)).size < 3) continue;
+
+		return items.find(el => textOf(el) === wanted) || null;
+	}
+	return null;
+})`
+
+func findNoteTypeTab(page *rod.Page, option string) (*rod.Element, error) {
+	tabText, ok := noteTypeTabText[option]
+	if !ok {
+		return nil, fmt.Errorf("未知的笔记类型「%s」", option)
+	}
+
+	// 先用独立预算探测，避免验证页或改版页让主页面的查找一直等到总 deadline。
+	// 真正点击时从主页面重取，不能带着探测副本仅剩的短 deadline。
+	if _, err := page.Timeout(probeTimeout).ElementByJS(rod.Eval(noteTypeTabJS, tabText)); err != nil {
+		return nil, riskOrError(page, fmt.Sprintf("未找到笔记类型顶部标签「%s」", tabText), err)
+	}
+
+	tab, err := page.ElementByJS(rod.Eval(noteTypeTabJS, tabText))
+	if err != nil {
+		return nil, riskOrError(page, fmt.Sprintf("未找到笔记类型顶部标签「%s」", tabText), err)
+	}
+	return tab, nil
+}
 
 // riskOrError 筛选路径上的失败收口：先看一眼是不是被风控拦了（首屏正常、等待期间
 // 才被跳转是常见形态），不是就按原因报错。

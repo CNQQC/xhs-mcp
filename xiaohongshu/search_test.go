@@ -55,6 +55,26 @@ func TestCollectFilters(t *testing.T) {
 	})
 }
 
+func TestSplitNoteTypeFilters(t *testing.T) {
+	noteType, panel := splitNoteTypeFilters([]pendingFilter{
+		{group: "排序依据", option: "最新"},
+		{group: "笔记类型", option: "视频"},
+		{group: "发布时间", option: "一天内"},
+	})
+
+	require.Equal(t, []pendingFilter{{group: "笔记类型", option: "视频"}}, noteType)
+	require.Equal(t, []pendingFilter{
+		{group: "排序依据", option: "最新"},
+		{group: "发布时间", option: "一天内"},
+	}, panel)
+}
+
+func TestNoteTypeTabText(t *testing.T) {
+	require.Equal(t, "全部", noteTypeTabText["不限"])
+	require.Equal(t, "视频", noteTypeTabText["视频"])
+	require.Equal(t, "图文", noteTypeTabText["图文"])
+}
+
 // TestFilterGroupsCoverFilterOption 组表必须覆盖 FilterOption 的每个字段，
 // 否则以后新增字段会被静默忽略。
 func TestFilterGroupsCoverFilterOption(t *testing.T) {
