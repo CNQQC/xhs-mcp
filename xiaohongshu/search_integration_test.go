@@ -13,26 +13,24 @@ import (
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
 )
 
-func TestSearch(t *testing.T) {
+func TestSearchWithoutFilters(t *testing.T) {
 	b := browser.NewBrowser(false)
 	defer b.Close()
 
-	page := b.NewPage()
-	defer func() {
-		_ = page.Close()
-	}()
+	for _, keyword := range []string{"美食", "贵州自驾"} {
+		t.Run(keyword, func(t *testing.T) {
+			page := b.NewPage()
+			defer func() {
+				_ = page.Close()
+			}()
 
-	action := NewSearchAction(page)
+			action := NewSearchAction(page)
+			feeds, err := action.Search(context.Background(), keyword)
+			require.NoError(t, err)
+			require.NotEmpty(t, feeds, "unfiltered search should not be empty")
 
-	feeds, err := action.Search(context.Background(), "Kimi")
-	require.NoError(t, err)
-	require.NotEmpty(t, feeds, "feeds should not be empty")
-
-	fmt.Printf("成功获取到 %d 个 Feed\n", len(feeds))
-
-	for _, feed := range feeds {
-		fmt.Printf("Feed ID: %s\n", feed.ID)
-		fmt.Printf("Feed Title: %s\n", feed.NoteCard.DisplayTitle)
+			fmt.Printf("关键词 %q 成功获取到 %d 个 Feed\n", keyword, len(feeds))
+		})
 	}
 }
 

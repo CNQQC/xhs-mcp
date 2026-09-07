@@ -3,6 +3,7 @@ package errors
 import "errors"
 
 var ErrNoFeeds = errors.New("没有捕获到 feeds 数据")
+var ErrSearchResultTimeout = errors.New("搜索结果卡片等待超时")
 var ErrNoFeedDetail = errors.New("没有捕获到 feed 详情数据")
 var ErrRiskVerification = errors.New("被小红书安全验证拦截")
 

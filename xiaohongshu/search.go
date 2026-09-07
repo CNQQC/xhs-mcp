@@ -143,9 +143,17 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	// 这里不再插一步 WaitStable：信息流页面有心跳/懒加载信标，请求永远不会空闲，
 	// 它必然等满自己那份预算（实测 10s）才收场，而它挡在识别与读取之前——晚到的
 	// 跳转要多花 10s 才被发现（实测 10.017s vs 354ms），正常页面也白等 10s。
-	// 晚到的跳转由 waitSearchFeeds 循环里的 checkRiskVerification 接住，注水就绪由
-	// 同一循环的 readSearchFeeds 接住，筛选那一步本来就有自己的元素等待。
-	result, err := waitSearchFeeds(page, searchURL, 8*time.Second)
+	//
+	// 两条路径的真正就绪信号不同：有筛选要先拿到初始 feeds，再用点击前后的 id
+	// 变化判断刷新；无筛选没有后续交互，必须等真实卡片出现。搜索页会先把
+	// feeds 设为 [] 再渲染卡片，所以无筛选路径不能先调 waitSearchFeeds。
+	var result string
+	if len(pending) == 0 {
+		result, err = waitUnfilteredSearchFeeds(page, searchURL, 15*time.Second)
+	} else {
+		// 晚到的风控跳转也由这个循环里的 checkRiskVerification 接住。
+		result, err = waitSearchFeeds(page, searchURL, 8*time.Second)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +281,77 @@ func logSearchYield(page *rod.Page, keyword string, raw, notes int) {
 
 // filterPanelJS 筛选面板是否已经展开。
 const filterPanelJS = `() => document.querySelector('div.filter-panel') !== null`
+
+// searchResultCardSelector 是搜索页真实笔记卡片的 DOM 选择器。
+// 不用 .feeds-container section：那会把「相关搜索」等非笔记 section 也当成结果。
+const searchResultCardSelector = `section.note-item`
+
+// searchFeedsPopulatedJS 用于收口一个很窄的竞态：DOM 卡片刚插入，Pinia 状态还没
+// 写回。这里仍然等业务条件，不靠固定 sleep。
+const searchFeedsPopulatedJS = `() => {
+	const f = window.__INITIAL_STATE__?.search?.feeds;
+	const v = f ? (f.value !== undefined ? f.value : f._value) : null;
+	return Array.isArray(v) && v.length > 0;
+}`
+
+// searchEmptyStateJS 只识别页面明确渲染出来的空态文案。仅有 feeds=[] 不够：
+// 它也是正常搜索在卡片渲染前的短暂过渡态。
+const searchEmptyStateJS = `() => {
+	const messages = ['暂无搜索结果', '暂无相关内容', '没有找到相关结果', '没有相关结果'];
+	const visible = el => {
+		const style = window.getComputedStyle(el);
+		const rect = el.getBoundingClientRect();
+		return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+	};
+	return [...document.querySelectorAll('div, section, p, span')].some(el => {
+		if (el.children.length !== 0 || !visible(el)) return false;
+		const text = (el.textContent || '').trim();
+		return messages.some(message => text === message || text.startsWith(message));
+	});
+}`
+
+// waitUnfilteredSearchFeeds 等无筛选搜索的第一张真实结果卡片。
+//
+// 这个等待故意放在 DOM 选择器上，而不是再次等 search.feeds 存在：后者在
+// 页面还没渲染时就可能是 []。超时时，只有页面显式给出空态才返回 []；
+// 否则报 ErrSearchResultTimeout，让调用方能区分「真的没有结果」和「卡片没加载出来」。
+func waitUnfilteredSearchFeeds(page *rod.Page, searchURL string, timeout time.Duration) (string, error) {
+	if _, err := page.Timeout(timeout).Element(searchResultCardSelector); err != nil {
+		if riskErr := checkRiskVerification(page); riskErr != nil {
+			return "", riskErr
+		}
+
+		empty, emptyErr := page.Eval(searchEmptyStateJS)
+		if emptyErr == nil && empty.Value.Bool() {
+			return "[]", nil
+		}
+
+		reason := fmt.Sprintf("无筛选搜索的结果卡片 %q 在 %s 内未出现", searchResultCardSelector, timeout)
+		finalURL := warnPageState(page, reason)
+		if finalURL != "" && finalURL != searchURL {
+			reason += fmt.Sprintf("（最终停留在 %s）", finalURL)
+		}
+		return "", fmt.Errorf("%w：%s: %v", errors.ErrSearchResultTimeout, reason, err)
+	}
+
+	if err := page.Timeout(probeTimeout).Wait(rod.Eval(searchFeedsPopulatedJS)); err != nil {
+		reason := fmt.Sprintf("无筛选搜索已出现结果卡片 %q，但 feeds 数据在 %s 内仍未就绪", searchResultCardSelector, probeTimeout)
+		warnPageState(page, reason)
+		return "", fmt.Errorf("%w：%s: %v", errors.ErrNoFeeds, reason, err)
+	}
+
+	result, err := readSearchFeeds(page)
+	if err != nil {
+		return "", err
+	}
+	if result == "" || result == "[]" {
+		reason := fmt.Sprintf("无筛选搜索已出现结果卡片 %q，但 feeds 数据仍为空", searchResultCardSelector)
+		warnPageState(page, reason)
+		return "", fmt.Errorf("%w：%s", errors.ErrNoFeeds, reason)
+	}
+
+	return result, nil
+}
 
 // noteTypeTabText 将接口参数映射到搜索页顶部的内容标签。
 var noteTypeTabText = map[string]string{
