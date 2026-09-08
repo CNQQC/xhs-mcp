@@ -86,7 +86,7 @@ func TestDetailViewCommentRefs(t *testing.T) {
 				ID: "c1", Content: "一级评论", CreateTimeText: "2023-12-10 16:01",
 				UserInfo: xiaohongshu.User{UserID: "u-c1", Nickname: "甲"},
 				SubComments: []xiaohongshu.Comment{{
-					ID: "c2", Content: "子评论",
+					ID: "c2", Content: "子评论", CreateTimeText: "2023-12-10 16:02",
 					UserInfo: xiaohongshu.User{UserID: "u-c2", Nickname: "乙"},
 				}},
 			}},
@@ -117,12 +117,21 @@ func TestDetailViewCommentRefs(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "c2", subTarget.CommentID)
 
-	// 评论只留「谁说了什么、多少人赞」，时间和 IP 归属地不给
+	// 评论和子回复都保留发布时间。
 	data, err := json.Marshal(v.CommentList)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "16:01", "评论不该带发布时间")
+	assert.Contains(t, string(data), `"time":"2023-12-10 16:01"`)
+	assert.Contains(t, string(data), `"time":"2023-12-10 16:02"`)
 	assert.NotContains(t, string(data), "location", "评论不该带 IP 归属地")
 	assert.Contains(t, string(data), "一级评论")
+
+	// 站点没有提供日期时省略时间字段。
+	detail.Comments.List[0].CreateTimeText = ""
+	detail.Comments.List[0].SubComments[0].CreateTimeText = ""
+	withoutTime := toNoteDetailView(tbl, "feed-req", "token-req", detail)
+	data, err = json.Marshal(withoutTime.CommentList)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"time"`)
 
 	assert.True(t, v.MoreComments)
 	assert.Equal(t, "2023-12-10 16:00", v.Time, "笔记本身的发布时间要留着")

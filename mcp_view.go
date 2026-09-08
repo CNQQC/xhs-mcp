@@ -36,14 +36,13 @@ type noteListView struct {
 
 // commentView 一条评论。
 //
-// 只有五样：谁说的、说了什么、多少人赞、回复它要用的 ref，以及它的回复。
-// 评论的发布时间和评论者的 IP 归属地都不给——实测这两项占整个评论列表的 27%，
-// 而"这条评论几点几分发的""评论者在哪个省"对读内容的人没有意义。笔记本身的
-// 发布时间还在（详情的 time 字段），需要的是那一个。
+// 保留作者、内容、发布时间、点赞数、回复所需的 ref 及子回复。
+// 发布时间与笔记的 time 字段一致，使用东八区可读时间。
 type commentView struct {
 	Ref     string        `json:"ref"`
 	Author  string        `json:"author,omitempty"`
 	Text    string        `json:"text,omitempty"`
+	Time    string        `json:"time,omitempty"`
 	Likes   string        `json:"likes,omitempty"`
 	Replies []commentView `json:"replies,omitempty"`
 }
@@ -189,6 +188,7 @@ func toCommentViews(
 			}),
 			Author:  c.UserInfo.Nickname,
 			Text:    c.Content,
+			Time:    c.CreateTimeText,
 			Likes:   c.LikeCount,
 			Replies: toCommentViews(refs, feedID, xsecToken, c.SubComments),
 		})
