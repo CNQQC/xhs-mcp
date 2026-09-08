@@ -1,0 +1,14 @@
+HTTP/1.1 200 OK
+Server: nginx/1.26.2
+Date: Tue, 08 Sep 2026 02:23:42 GMT
+Content-Type: text/html; charset=utf-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Cache-Control: no-store
+Content-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Robots-Tag: noindex, nofollow, noarchive
+
