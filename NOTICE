@@ -59,6 +59,9 @@ Copyright 2026 CNQQC
 以下文件为本项目原创，不含上游代码。它们在 Apache-2.0 之外，同时以 MIT 协议
 授权（见 LICENSE-MIT），可在满足其中任一协议的前提下单独取用：
 
+    AGENTS.md
+    mcp_image.go
+    mcp_image_test.go
     browser_lease.go
     browser_lease_test.go
     mcp_handlers_test.go

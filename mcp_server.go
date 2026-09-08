@@ -63,7 +63,7 @@ type FeedDetailArgs struct {
 	ClickMoreReplies bool   `json:"click_more_replies,omitempty" jsonschema:"【仅当load_all_comments为true时生效】是否展开二级回复。true展开子评论，false不展开（默认）"`
 	ReplyLimit       int    `json:"reply_limit,omitempty" jsonschema:"【仅当click_more_replies为true时生效】跳过回复数过多的评论。例如10表示跳过超过10条回复的，默认10"`
 	ScrollSpeed      string `json:"scroll_speed,omitempty" jsonschema:"【仅当load_all_comments为true时生效】滚动速度slow慢速、normal正常、fast快速"`
-	IncludeImages    bool   `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回。默认false，只给imageCount张数；你读不了图片内容，只有要把图片地址转交给别人时才需要true"`
+	IncludeImages    bool   `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回。默认false，只给images张数；只有要转交图片地址时才需要true；需要看图时按需调用get_feed_image"`
 }
 
 // UserProfileArgs 获取用户主页的参数
@@ -295,7 +295,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_detail",
-			Description: "获取小红书笔记详情，返回笔记正文、作者、发布时间与 IP 归属地、互动数据（点赞/评论/收藏数）及评论列表。笔记和每条评论都带 ref：回复某条评论时把该评论的 ref 传给 reply_comment_in_feed 即可。图片默认只给张数 imageCount，需要每张图的尺寸与地址时设 include_images=true。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
+			Description: "获取小红书笔记详情，返回笔记正文、作者、发布时间与 IP 归属地、互动数据（点赞/评论/收藏数）及评论列表。笔记和每条评论都带 ref：回复某条评论时把该评论的 ref 传给 reply_comment_in_feed 即可。图片默认只给张数 images，需要每张图的尺寸与地址时设 include_images=true（不返回可见图片）。只有明确需要识图、OCR 或分析构图时才调用 get_feed_image；普通正文阅读与总结不要取图。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
@@ -339,6 +339,18 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 
 			result := appServer.handleGetFeedDetail(ctx, argsMap)
 			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	// 显式取图通道，与低成本的文字详情分离。
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_feed_image",
+			Description: "获取笔记中指定的一张实际图片，返回 MCP image 内容供支持视觉的模型查看。仅当用户任务有明确视觉需求（识别物体、读取图中文字/OCR、分析配色或构图、比较图片）且文字详情不足时调用。普通搜索、正文阅读、总结、互动操作不要调用，也不要自动遍历所有图片。代价：每次会重新访问笔记详情并额外下载一张图片，增加网络流量与延迟，并消耗视觉 token/上下文，具体计费依模型和客户端而定；下载超时30秒，单图上限10 MiB。优先传 ref，image_index 从1开始，默认只取第1张。视频笔记只支持图片列表中的静态图，不提取视频帧。",
+			Annotations: &mcp.ToolAnnotations{Title: "Get Feed Image", ReadOnlyHint: true},
+		},
+		withPanicRecovery("get_feed_image", func(ctx context.Context, req *mcp.CallToolRequest, args FeedImageArgs) (*mcp.CallToolResult, any, error) {
+			return convertToMCPResult(appServer.handleGetFeedImage(ctx, args)), nil, nil
 		}),
 	)
 
@@ -613,7 +625,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 19)
+	logrus.Infof("Registered %d MCP tools", 20)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式
