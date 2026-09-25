@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,4 +121,84 @@ func TestNewLeasedBrowserReleasesSlotOnBuildPanic(t *testing.T) {
 	if len(sem) != 0 {
 		t.Fatalf("build panic 后名额没还回去，仍占用 %d", len(sem))
 	}
+}
+
+// takeSlot 占一张名额，返回只能生效一次的归还函数（同 newLeasedBrowser 里的 release）。
+func takeSlot(t *testing.T) func() {
+	t.Helper()
+	sem := browserSlots()
+	select {
+	case sem <- struct{}{}:
+	default:
+		t.Fatal("名额本应空闲")
+	}
+	var once sync.Once
+	return func() { once.Do(func() { <-sem }) }
+}
+
+// waitSlotsFree 等到名额全部归还，超时则失败。
+func waitSlotsFree(t *testing.T, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for len(browserSlots()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 内名额没有归还，仍占用 %d", within, len(browserSlots()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// 调用方卡死、永远走不到 Close：看门狗到点也要把名额收回来。
+func TestLeasedBrowserWatchdogReclaimsSlot(t *testing.T) {
+	newLease(nil, func() {}, takeSlot(t), 30*time.Millisecond)
+	waitSlotsFree(t, time.Second)
+}
+
+// 关浏览器卡住（MustClose 走 Background）：Close 只等 browserCloseTimeout 就归还名额。
+func TestLeasedBrowserCloseBounded(t *testing.T) {
+	old := browserCloseTimeout
+	browserCloseTimeout = 30 * time.Millisecond
+	defer func() { browserCloseTimeout = old }()
+
+	block := make(chan struct{})
+	defer close(block)
+	b := newLease(nil, func() { <-block }, takeSlot(t), time.Hour)
+
+	start := time.Now()
+	b.Close()
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Close 卡了 %s", d)
+	}
+	waitSlotsFree(t, 0)
+}
+
+// 关浏览器 panic（Chromium 已崩溃）：不外抛，名额照还。
+func TestLeasedBrowserClosePanicReleases(t *testing.T) {
+	b := newLease(nil, func() { panic("模拟 MustClose 失败") }, takeSlot(t), time.Hour)
+	b.Close()
+	waitSlotsFree(t, 0)
+}
+
+// limitHold 只收紧不放宽。
+func TestLeasedBrowserLimitHold(t *testing.T) {
+	t.Run("收紧后按新上限收回", func(t *testing.T) {
+		b := newLease(nil, func() {}, takeSlot(t), time.Hour)
+		b.limitHold(30 * time.Millisecond)
+		waitSlotsFree(t, time.Second)
+	})
+	t.Run("放宽无效", func(t *testing.T) {
+		b := newLease(nil, func() {}, takeSlot(t), 30*time.Millisecond)
+		b.limitHold(time.Hour)
+		waitSlotsFree(t, time.Second)
+	})
+	t.Run("正常 Close 后看门狗不再动作", func(t *testing.T) {
+		release := takeSlot(t)
+		calls := 0
+		b := newLease(nil, func() {}, func() { calls++; release() }, 30*time.Millisecond)
+		b.Close()
+		time.Sleep(80 * time.Millisecond)
+		if calls != 1 {
+			t.Fatalf("release 应只调用 1 次，实际 %d", calls)
+		}
+	})
 }

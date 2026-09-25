@@ -72,6 +72,7 @@ Copyright 2026 CNQQC
     verify_link.go
     verify_link_test.go
     verify_page.go
+    xiaohongshu/feed_detail_scroll_integration_test.go
     xiaohongshu/resource_block.go
     xiaohongshu/risk.go
     xiaohongshu/risk_test.go

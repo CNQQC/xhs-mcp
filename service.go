@@ -133,7 +133,7 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	loginAction := xiaohongshu.NewLogin(page)
 
@@ -180,7 +180,7 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	var page *rod.Page
 	deferFunc := closeQuietly("登录扫码", func() {
 		if page != nil {
-			_ = page.Close()
+			closePage(page)
 		}
 		b.Close()
 	})
@@ -268,6 +268,14 @@ func (s *XiaohongshuService) waitScanInBackground(
 // pageCloseTimeout 关页面的上限，理由同 cookieReadTimeout：走的是 browser 那条
 // context.Background()，不设上限就可能挂在归还名额票之前。
 const pageCloseTimeout = 5 * time.Second
+
+// closePage 带上限地关页面。rod 的 Page.Close 要等 TargetDestroyed 事件，走的是建页时
+// 的 context.Background()：页面卡死时一挂就是几个小时，而它排在归还名额之前（线上实测）。
+func closePage(page *rod.Page) {
+	if err := page.Timeout(pageCloseTimeout).Close(); err != nil {
+		logrus.Debugf("关闭页面失败: %v", err)
+	}
+}
 
 // closeQuietly 把「关浏览器」包成绝不 panic 出去的形状。
 //
@@ -564,7 +572,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action, err := xiaohongshu.NewPublishImageAction(page)
 	if err != nil {
@@ -643,7 +651,7 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action, err := xiaohongshu.NewPublishVideoAction(page)
 	if err != nil {
@@ -659,7 +667,7 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewFeedsListAction(page)
 
@@ -682,7 +690,7 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewSearchAction(page)
 
@@ -708,9 +716,11 @@ func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToke
 func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.FeedDetailConfig) (*FeedDetailResponse, error) {
 	b := newBrowser(ctx)
 	defer b.Close()
+	// 页面本身有超时（见 FeedDetailTimeout），名额占用上限跟着收紧，留足关页关浏览器的余量
+	b.limitHold(xiaohongshu.FeedDetailTimeout(loadAllComments) + time.Minute)
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewFeedDetailAction(page)
 
@@ -738,7 +748,7 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewUserProfileAction(page)
 
@@ -762,7 +772,7 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsec
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -779,7 +789,7 @@ func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken str
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Like(ctx, feedID, xsecToken); err != nil {
@@ -794,7 +804,7 @@ func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken s
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Unlike(ctx, feedID, xsecToken); err != nil {
@@ -809,7 +819,7 @@ func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Favorite(ctx, feedID, xsecToken); err != nil {
@@ -824,7 +834,7 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecTok
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Unfavorite(ctx, feedID, xsecToken); err != nil {
@@ -839,7 +849,7 @@ func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xse
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -862,7 +872,7 @@ func (s *XiaohongshuService) GetUnreadCount(ctx context.Context) (*xiaohongshu.N
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	return xiaohongshu.NewNotificationAction(page).UnreadCount(ctx)
 }
@@ -878,7 +888,7 @@ func (s *XiaohongshuService) ListNotifications(ctx context.Context, tab string, 
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	return xiaohongshu.NewNotificationAction(page).List(ctx, parsed, limit)
 }
@@ -889,7 +899,7 @@ func (s *XiaohongshuService) LikeNotification(ctx context.Context, commentID str
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	return xiaohongshu.NewNotificationAction(page).Like(ctx, commentID, unlike)
 }
@@ -900,7 +910,7 @@ func (s *XiaohongshuService) ReplyNotification(ctx context.Context, commentID, c
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	return xiaohongshu.NewNotificationAction(page).Reply(ctx, commentID, content)
 }
@@ -948,7 +958,7 @@ func withBrowserPage(ctx context.Context, fn func(*rod.Page) error) error {
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closePage(page)
 
 	return fn(page)
 }

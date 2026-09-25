@@ -94,6 +94,17 @@ net/http 一请求一 goroutine——**两个请求撞上就是两套完整 Chro
 会 panic——那时 deferFunc 还没挂，整个浏览器进程组（约 300MB）永久泄漏，
 在 1200MB 的容器里漏两次就够触发一次 OOM。改成默认关闭 + 显式移交。
 
+**名额永不漏：看门狗兜底。** 2026-09-25 线上两张名额同时永久泄漏，服务停摆（协程栈实证）：
+一处卡在 `Mouse.Scroll`（rod 的 Mouse 绑在建页时的原始 page 上，走 `context.Background()`，
+外层 `page.Timeout` 对它无效，渲染进程不回就挂了 5 天），一处卡在裸的 `page.Close()`
+（等 `TargetDestroyed` 等不到，挂了几小时）。两处都在归还名额之前。修法：
+
+- 名额加看门狗：占用超过 20 分钟就关掉 Chromium 并收回名额——WebSocket 一断，rod 让所有
+  挂着的调用立刻报错返回；详情页按自身超时收紧（首屏 90 秒 + 1 分钟，滚评论 10 + 1 分钟）
+- 关页面一律限时 5 秒，关浏览器限时 10 秒，超时先还名额
+- 滚轮改为逐格直接发 CDP、每格限时 5 秒，不再走无超时的 `Mouse.Scroll`
+- 只取首屏的详情页超时从 10 分钟降到 90 秒（正常 10 秒内完成）
+
 以及 `feed_detail` 的 `retry.Attempts(3)` 一直是死代码：`retry.Do` 只认 error，
 而里面写的是 `page.MustNavigate(url)`——失败是 **panic**，retry 根本捕获不到。
 线上 8 次 `net::ERR_NAME_NOT_RESOLVED` 一次都没被重试过。改用返回 error 的
