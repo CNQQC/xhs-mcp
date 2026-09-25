@@ -94,6 +94,17 @@ net/http 一请求一 goroutine——**两个请求撞上就是两套完整 Chro
 会 panic——那时 deferFunc 还没挂，整个浏览器进程组（约 300MB）永久泄漏，
 在 1200MB 的容器里漏两次就够触发一次 OOM。改成默认关闭 + 显式移交。
 
+**名额永不漏：看门狗兜底。** 2026-09-25 线上两张名额同时永久泄漏，服务停摆（协程栈实证）：
+一处卡在 `Mouse.Scroll`（rod 的 Mouse 绑在建页时的原始 page 上，走 `context.Background()`，
+外层 `page.Timeout` 对它无效，渲染进程不回就挂了 5 天），一处卡在裸的 `page.Close()`
+（等 `TargetDestroyed` 等不到，挂了几小时）。两处都在归还名额之前。修法：
+
+- 名额加看门狗：占用超过 20 分钟就关掉 Chromium 并收回名额——WebSocket 一断，rod 让所有
+  挂着的调用立刻报错返回；详情页按自身超时收紧（首屏 90 秒 + 1 分钟，滚评论 10 + 1 分钟）
+- 关页面一律限时 5 秒，关浏览器限时 10 秒，超时先还名额
+- 滚轮改为逐格直接发 CDP、每格限时 5 秒，不再走无超时的 `Mouse.Scroll`
+- 只取首屏的详情页超时从 10 分钟降到 90 秒（正常 10 秒内完成）
+
 以及 `feed_detail` 的 `retry.Attempts(3)` 一直是死代码：`retry.Do` 只认 error，
 而里面写的是 `page.MustNavigate(url)`——失败是 **panic**，retry 根本捕获不到。
 线上 8 次 `net::ERR_NAME_NOT_RESOLVED` 一次都没被重试过。改用返回 error 的
@@ -1084,6 +1095,12 @@ npx mcporter list xiaohongshu-mcp
   - 🆕 **本仓库新增**：视频笔记会额外返回 `video.subtitleText`——服务端下载好字幕、
     去掉时间轴后的完整台词文本。视频画面模型读不了，字幕能读。
   - 🆕 **本仓库新增**：笔记与评论的时间戳同时给出可读格式，模型不用自己换算
+- 🆕 `get_feed_details` - **本仓库新增**。批量获取笔记详情（必需：refs，一次最多 6 条）
+  - 只占一个浏览器名额，在同一个浏览器里并发开 2 个标签页抓取，一次返回全部结果；
+    比逐条调 `get_feed_detail` 省掉了每条都要起一次浏览器的开销，也少了模型来回的轮次
+  - 每条内容与 `get_feed_detail` 默认返回一致（含前 10 条一级评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
+  - 单条失败只在那一条上给出 `error`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
+  - `include_images`: 是否连每张图的尺寸与地址一起返回（可选），默认 false
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：feed_id, xsec_token, content）
 - `reply_comment_in_feed` - 回复笔记下的指定评论（必需：feed_id, xsec_token, content，以及 comment_id 或 user_id 至少一个）
 - `like_feed` - 点赞/取消点赞（必需：feed_id, xsec_token）

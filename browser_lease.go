@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-rod/rod"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/headless_browser"
 )
@@ -68,20 +69,121 @@ func browserSlots() chan struct{} {
 	return browserSem
 }
 
+// browserMaxHold 一张名额票最长能占多久，到点强制收回。
+//
+// 线上出过两张票同时永久泄漏（2026-09-25 抓的协程栈），两处都卡在归还名额之前：
+//   - rod 的 Mouse 绑在建页时的原始 page 上，走的是 context.Background()，外层
+//     page.Timeout 对它无效。渲染进程不回 Input.dispatchMouseEvent，滚评论那一步挂了 5 天；
+//   - 页面卡满 10 分钟后，defer 里裸的 page.Close() 等 TargetDestroyed 等不到，挂了几个小时。
+//
+// 两张票都漏掉后，此后每个请求排队 60 秒就失败，整个服务等于停摆。这类「某个 CDP 调用
+// 永远不回」没法逐个堵全（鼠标、键盘、关页、关浏览器走的都是 Background），所以在名额
+// 这一层兜底：占用超过上限，就关掉 Chromium、收回名额。Chromium 一关，WebSocket 断开，
+// rod 会让所有挂着的调用立刻返回错误，卡住的 goroutine 随之退出。
+//
+// 20 分钟高于任何正常流程，最长的是发布视频（上传 5 分钟 + 等发布按钮 10 分钟）。
+// 耗时有明确上界的调用方用 limitHold 收紧。
+const browserMaxHold = 20 * time.Minute
+
+// browserCloseTimeout 正常关浏览器的上限。headless_browser.Close 走的是 rod 的
+// MustClose，同样是 context.Background()；等不到就先归还名额，关闭留在后台继续。
+// 是 var 只为测试能调短。
+var browserCloseTimeout = 10 * time.Second
+
 // leasedBrowser 给浏览器实例配一张名额票，Close 时归还。
 //
 // 内嵌 *headless_browser.Browser 是刻意的：调用方在 b 上只用到 Close 和 NewPage
-// （已 grep 核对，19 个调用点无一例外），靠 Go 的方法提升，全部调用点无需改动，
-// 唯一被拦截的就是 Close。
+// （已 grep 核对，19 个调用点无一例外），靠 Go 的方法提升，全部调用点无需改动。
+// 被拦截的只有 Close（归还名额）和 NewPage（记下 rod 浏览器，供看门狗强制关闭）。
 type leasedBrowser struct {
 	*headless_browser.Browser
-	release func()
+	release       func()
+	closeUnderlay func() // 真正关浏览器的动作，测试里可替换
+
+	mu       sync.Mutex
+	rod      *rod.Browser
+	watchdog *time.Timer
+	deadline time.Time
 }
 
-// Close 关浏览器并归还名额。名额一定要还，所以即便关闭本身出问题也不能跳过。
+// newLease 组装 leasedBrowser 并启动看门狗。
+func newLease(hb *headless_browser.Browser, closeUnderlay, release func(), maxHold time.Duration) *leasedBrowser {
+	b := &leasedBrowser{Browser: hb, release: release, closeUnderlay: closeUnderlay}
+	b.mu.Lock()
+	b.deadline = time.Now().Add(maxHold)
+	b.watchdog = time.AfterFunc(maxHold, func() { b.reclaim(maxHold) })
+	b.mu.Unlock()
+	return b
+}
+
+// NewPage 建页面，顺带记下 rod 浏览器——headless_browser 不导出它，看门狗要靠它关掉 Chromium。
+func (b *leasedBrowser) NewPage() *rod.Page {
+	page := b.Browser.NewPage()
+	b.mu.Lock()
+	if b.rod == nil {
+		b.rod = page.Browser()
+	}
+	b.mu.Unlock()
+	return page
+}
+
+// limitHold 把本次占用上限收紧到从现在起 d。只收紧不放宽；看门狗已经触发则不做任何事。
+func (b *leasedBrowser) limitHold(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	deadline := time.Now().Add(d)
+	if b.watchdog == nil || !deadline.Before(b.deadline) || !b.watchdog.Stop() {
+		return
+	}
+	b.deadline = deadline
+	b.watchdog = time.AfterFunc(d, func() { b.reclaim(d) })
+}
+
+// reclaim 看门狗到点：关掉 Chromium 让卡住的调用全部报错返回，并收回名额。
+func (b *leasedBrowser) reclaim(held time.Duration) {
+	logrus.Errorf("浏览器已占用 %s 仍未归还，强制关闭 Chromium 并收回名额", held)
+
+	b.mu.Lock()
+	rb := b.rod
+	b.mu.Unlock()
+	if rb != nil {
+		if err := rb.Timeout(browserCloseTimeout).Close(); err != nil {
+			logrus.Warnf("强制关闭 Chromium 返回: %v", err)
+		}
+	}
+	b.release()
+}
+
+// Close 关浏览器并归还名额。名额一定要还：关闭出错不能跳过归还，关闭卡住也只等
+// browserCloseTimeout。关闭的 panic（MustClose 遇上已崩溃的 Chromium）在这里吞掉。
 func (b *leasedBrowser) Close() {
 	defer b.release()
-	b.Browser.Close()
+
+	b.mu.Lock()
+	if b.watchdog != nil {
+		b.watchdog.Stop()
+	}
+	b.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Warnf("关闭浏览器出错: %v", r)
+			}
+		}()
+		b.closeUnderlay()
+	}()
+
+	timer := time.NewTimer(browserCloseTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		logrus.Errorf("关闭浏览器超过 %s 仍未完成，先归还名额", browserCloseTimeout)
+	}
 }
 
 // acquireBrowserSlot 取一张名额票，取不到就是明确失败。ctx 不能为 nil。
@@ -136,5 +238,6 @@ func newLeasedBrowser(ctx context.Context, build func() *headless_browser.Browse
 		}
 	}()
 
-	return &leasedBrowser{Browser: build(), release: release}
+	hb := build()
+	return newLease(hb, hb.Close, release, browserMaxHold)
 }

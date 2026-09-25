@@ -124,7 +124,7 @@ func (n *NotificationAction) locate(ctx context.Context, page *rod.Page, comment
 			return nil, 0, fmt.Errorf("未找到评论 %s，它可能不在「评论和@」里或已被清理", commentID)
 		}
 
-		if err := page.Mouse.Scroll(0, 800, 5); err != nil {
+		if err := wheelSteps(page, 800, 5); err != nil {
 			return nil, 0, fmt.Errorf("滚动查找失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BetweenScroll)

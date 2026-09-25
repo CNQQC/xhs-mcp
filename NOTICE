@@ -60,6 +60,8 @@ Copyright 2026 CNQQC
 授权（见 LICENSE-MIT），可在满足其中任一协议的前提下单独取用：
 
     AGENTS.md
+    feed_batch.go
+    feed_batch_test.go
     mcp_image.go
     mcp_image_test.go
     browser_lease.go
@@ -72,6 +74,7 @@ Copyright 2026 CNQQC
     verify_link.go
     verify_link_test.go
     verify_page.go
+    xiaohongshu/feed_detail_scroll_integration_test.go
     xiaohongshu/resource_block.go
     xiaohongshu/risk.go
     xiaohongshu/risk_test.go

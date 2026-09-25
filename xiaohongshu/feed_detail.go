@@ -95,6 +95,32 @@ func NewFeedDetailAction(page *rod.Page) *FeedDetailAction {
 
 // ========== 主要业务逻辑 ==========
 
+// FeedDetailTimeout 详情页整体超时。滚动加载评论可能要几分钟；只取首屏的正常 10 秒内
+// 完成，给 90 秒足够——再长就是页面卡死，早点失败才能早点把浏览器名额还回去。
+func FeedDetailTimeout(loadAllComments bool) time.Duration {
+	if loadAllComments {
+		return 10 * time.Minute
+	}
+	return 90 * time.Second
+}
+
+// firstCommentsTimeout 等首屏评论的上限。
+const firstCommentsTimeout = 15 * time.Second
+
+// waitFirstComments 等首屏评论请求完成（comments.firstRequestFinish，无评论的笔记同样会置 true）。
+// 评论是详情数据落地后前端另发请求取的：单页约 6 秒，同一浏览器多页并发时要十几秒。
+// 不等就提取，评论列表是空的。等不到只记日志，正文照常返回。
+func waitFirstComments(page *rod.Page, feedID string) {
+	err := page.Timeout(firstCommentsTimeout).Wait(rod.Eval(`(id) => {
+		const m = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.note && window.__INITIAL_STATE__.note.noteDetailMap;
+		const c = m && m[id] && m[id].comments;
+		return !!c && c.firstRequestFinish === true;
+	}`, feedID))
+	if err != nil {
+		logrus.Warnf("首屏评论未在 %s 内加载完，先返回已有内容: %v", firstCommentsTimeout, err)
+	}
+}
+
 func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	return f.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
 }
@@ -102,7 +128,7 @@ func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken 
 func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	config = config.normalize()
 
-	page := f.page.Context(ctx).Timeout(10 * time.Minute)
+	page := f.page.Context(ctx).Timeout(FeedDetailTimeout(loadAllComments))
 	url := makeFeedDetailURL(feedID, xsecToken)
 
 	// 详情数据全部取自 __INITIAL_STATE__，图片和视频只是渲染出来给人看的，
@@ -159,6 +185,8 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
 			logrus.Warnf("加载全部评论失败: %v", err)
 		}
+	} else {
+		waitFirstComments(page, feedID)
 	}
 
 	// ctx 已取消时直接返回，避免在已取消的 page 上执行 MustEval 触发 panic
@@ -725,7 +753,7 @@ func smartScroll(page *rod.Page, delta float64) {
 			notch = remain
 		}
 
-		if err := page.Mouse.Scroll(0, notch, 1); err != nil {
+		if err := wheel(page, notch); err != nil {
 			return
 		}
 		remain -= notch
@@ -734,6 +762,32 @@ func smartScroll(page *rod.Page, delta float64) {
 			time.Sleep(scrollNotchInterval())
 		}
 	}
+}
+
+// wheel 在当前指针位置发一格滚轮，单格限时 5 秒。
+//
+// 不用 page.Mouse.Scroll：rod 的 Mouse 绑在建页时的原始 page 上，走 context.Background()，
+// 外层 page.Timeout 对它无效。渲染进程不回 Input.dispatchMouseEvent 时它永远不返回，
+// 线上实测一挂 5 天，连带浏览器名额永久不还。
+func wheel(page *rod.Page, deltaY float64) error {
+	pos := page.Mouse.Position()
+	return proto.InputDispatchMouseEvent{
+		Type:   proto.InputDispatchMouseEventTypeMouseWheel,
+		Button: proto.InputMouseButtonNone,
+		X:      pos.X,
+		Y:      pos.Y,
+		DeltaY: deltaY,
+	}.Call(page.Timeout(5 * time.Second))
+}
+
+// wheelSteps 分 steps 格滚动 total 像素，同 Mouse.Scroll，但每格都有超时（见 wheel）。
+func wheelSteps(page *rod.Page, total float64, steps int) error {
+	for i := 0; i < steps; i++ {
+		if err := wheel(page, total/float64(steps)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // scrollNotchSize 单格滚轮的幅度，围绕标准的 120px 浮动。

@@ -73,6 +73,19 @@ type noteDetailView struct {
 	MoreComments bool          `json:"moreComments,omitempty"` // 还有没加载完的评论
 }
 
+// noteBatchItem get_feed_details 里的一条。失败时只有 ref 和 error。
+type noteBatchItem struct {
+	noteDetailView
+	Error string `json:"error,omitempty"`
+}
+
+// noteBatchView get_feed_details 的返回体，notes 顺序与请求的 refs 一致。
+type noteBatchView struct {
+	Notes  []noteBatchItem `json:"notes"`
+	Count  int             `json:"count"`
+	Failed int             `json:"failed,omitempty"`
+}
+
 // profileView user_profile / get_my_profile 的返回体。
 type profileView struct {
 	Nickname string `json:"nickname,omitempty"`

@@ -964,6 +964,11 @@ After successful connection, you can use the following MCP tools:
   - `click_more_replies`: Whether to expand nested replies (optional), only effective when load_all_comments=true, default false
   - `reply_limit`: Skip comments with too many replies (optional), only effective when click_more_replies=true, default 10
   - `scroll_speed`: Scroll speed (optional), `slow` | `normal` | `fast`, only effective when load_all_comments=true
+- `get_feed_details` - **Added in this fork.** Fetch details for multiple notes in one call (required: refs, up to 6)
+  - Holds a single browser slot and opens 2 tabs concurrently inside it, returning all results at once
+  - Each item matches the default `get_feed_detail` output (including the first 10 top-level comments); `notes` keeps the order of `refs`
+  - A failed item only carries `ref` and `error`; the rest are unaffected. Use `get_feed_detail` with load_all_comments=true for more comments
+  - `include_images`: Whether to include each image's size and URL (optional), default false
 - `post_comment_to_feed` - Post comments to RedNote posts (required: feed_id, xsec_token, content)
 - `reply_comment_in_feed` - Reply to a specific comment under a note (required: feed_id, xsec_token, content, and at least one of comment_id or user_id)
 - `like_feed` - Like / unlike a note (required: feed_id, xsec_token)
