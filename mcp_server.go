@@ -342,6 +342,21 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
+	// 批量详情：一个浏览器里并发开多个标签页，一次返回多条
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_feed_details",
+			Description: "批量获取多条小红书笔记详情，一次最多10条，并发抓取、一次返回，比逐条调用 get_feed_detail 快得多。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、前10条一级评论），返回的 notes 顺序与 refs 相同；单条失败时该条只有 ref 和 error，不影响其余。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "Get Feed Details (Batch)",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("get_feed_details", func(ctx context.Context, req *mcp.CallToolRequest, args FeedDetailsArgs) (*mcp.CallToolResult, any, error) {
+			return convertToMCPResult(appServer.handleGetFeedDetails(ctx, args)), nil, nil
+		}),
+	)
+
 	// 显式取图通道，与低成本的文字详情分离。
 	mcp.AddTool(server,
 		&mcp.Tool{
@@ -625,7 +640,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 20)
+	logrus.Infof("Registered %d MCP tools", 21)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式
