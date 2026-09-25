@@ -1095,10 +1095,10 @@ npx mcporter list xiaohongshu-mcp
   - 🆕 **本仓库新增**：视频笔记会额外返回 `video.subtitleText`——服务端下载好字幕、
     去掉时间轴后的完整台词文本。视频画面模型读不了，字幕能读。
   - 🆕 **本仓库新增**：笔记与评论的时间戳同时给出可读格式，模型不用自己换算
-- 🆕 `get_feed_details` - **本仓库新增**。批量获取笔记详情（必需：refs，一次最多 10 条）
-  - 只占一个浏览器名额，在同一个浏览器里并发开 3 个标签页抓取，一次返回全部结果；
+- 🆕 `get_feed_details` - **本仓库新增**。批量获取笔记详情（必需：refs，一次最多 6 条）
+  - 只占一个浏览器名额，在同一个浏览器里并发开 2 个标签页抓取，一次返回全部结果；
     比逐条调 `get_feed_detail` 省掉了每条都要起一次浏览器的开销，也少了模型来回的轮次
-  - 每条内容与 `get_feed_detail` 默认返回一致（含前 10 条一级评论），`notes` 顺序与 `refs` 相同
+  - 每条内容与 `get_feed_detail` 默认返回一致（含前 10 条一级评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
   - 单条失败只在那一条上给出 `error`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
   - `include_images`: 是否连每张图的尺寸与地址一起返回（可选），默认 false
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：feed_id, xsec_token, content）

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
@@ -18,19 +19,18 @@ import (
 // 在里面同时开几个标签页抓，一次调用返回全部结果。
 
 const (
-	// feedBatchMax 单次最多几条。10 条按 3 路并发约 4 轮，控制在 MCP 客户端
-	// 常见的 60 秒超时以内。
-	feedBatchMax = 10
+	// feedBatchMax 单次最多几条。线上实测（2 核 / 1200MB，含等首屏评论）10 条要 57 秒，
+	// 贴着 MCP 客户端常见的 60 秒超时；6 条约 35 秒，留足余量。
+	feedBatchMax = 6
 
-	// feedBatchConcurrency 同一浏览器里同时开的标签页数。
-	// 多开一个标签页只多一个渲染进程（图片视频已被拦），比多起一个浏览器省得多；
-	// 但目标机只有 2 核 / 1200MB，另一张浏览器名额也可能同时在用，所以取保守的 3。
-	feedBatchConcurrency = 3
+	// feedBatchConcurrency 同一浏览器里同时开的标签页数。线上实测 10 条：
+	// 3 路 56 秒、峰值 891MB；2 路 57 秒、峰值 751MB——2 核 CPU 是瓶颈，多开不快，只多吃内存。
+	feedBatchConcurrency = 2
 )
 
 // FeedDetailsArgs get_feed_details 的参数
 type FeedDetailsArgs struct {
-	Refs          []string `json:"refs" jsonschema:"笔记 ref 列表，取自 search_feeds / list_feeds / user_profile 返回的 ref，一次最多10条"`
+	Refs          []string `json:"refs" jsonschema:"笔记 ref 列表，取自 search_feeds / list_feeds / user_profile 返回的 ref，一次最多6条"`
 	IncludeImages bool     `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回，默认false只给张数"`
 }
 
@@ -44,18 +44,16 @@ type feedDetailResult struct {
 func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
 	b := newBrowser(ctx)
 	defer b.Close()
+	// 名额占用上限：最坏每轮都卡满单页超时，另留 1 分钟收尾
+	rounds := (len(targets) + feedBatchConcurrency - 1) / feedBatchConcurrency
+	b.limitHold(time.Duration(rounds)*xiaohongshu.FeedDetailTimeout(false) + time.Minute)
 
 	return fetchConcurrently(ctx, len(targets), feedBatchConcurrency,
 		func(ctx context.Context, i int) (*xiaohongshu.FeedDetailResponse, error) {
 			page := b.NewPage()
-			// 关页要有上限（见 service.go 的 pageCloseTimeout）。批量里更要紧：rod 的
-			// Page.Close 持有整个浏览器的 targetsLock，一个标签页关不掉，其余标签页的
-			// 开页、关页都会被这把锁堵住，整批挂死、名额不还。
-			defer func() {
-				if err := page.Timeout(pageCloseTimeout).Close(); err != nil {
-					logrus.Warnf("关闭第 %d 个标签页失败: %v", i+1, err)
-				}
-			}()
+			// 关页必须限时（closePage）。批量里更要紧：rod 的 Page.Close 持有整个浏览器的
+			// targetsLock，一个标签页关不掉，其余标签页的开页、关页都会被这把锁堵住。
+			defer closePage(page)
 
 			return xiaohongshu.NewFeedDetailAction(page).
 				GetFeedDetailWithConfig(ctx, targets[i].FeedID, targets[i].XsecToken, false, config)
@@ -164,9 +162,9 @@ func (s *AppServer) handleGetFeedDetails(ctx context.Context, args FeedDetailsAr
 				notes[i] = noteBatchItem{noteDetailView: noteDetailView{Ref: args.Refs[i]}, Error: r.err.Error()}
 				continue
 			}
-			notes[i] = noteBatchItem{
-				noteDetailView: toNoteDetailView(s.refs, targets[j].FeedID, targets[j].XsecToken, r.detail),
-			}
+			view := toNoteDetailView(s.refs, targets[j].FeedID, targets[j].XsecToken, r.detail)
+			view.Ref = args.Refs[i] // 带回调用方给的 ref，按 ref 就能对上号
+			notes[i] = noteBatchItem{noteDetailView: view}
 		}
 	}
 
