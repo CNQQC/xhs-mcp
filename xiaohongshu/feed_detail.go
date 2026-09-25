@@ -95,6 +95,15 @@ func NewFeedDetailAction(page *rod.Page) *FeedDetailAction {
 
 // ========== 主要业务逻辑 ==========
 
+// FeedDetailTimeout 详情页整体超时。滚动加载评论可能要几分钟；只取首屏的正常 10 秒内
+// 完成，给 90 秒足够——再长就是页面卡死，早点失败才能早点把浏览器名额还回去。
+func FeedDetailTimeout(loadAllComments bool) time.Duration {
+	if loadAllComments {
+		return 10 * time.Minute
+	}
+	return 90 * time.Second
+}
+
 func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	return f.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
 }
@@ -102,7 +111,7 @@ func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken 
 func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	config = config.normalize()
 
-	page := f.page.Context(ctx).Timeout(10 * time.Minute)
+	page := f.page.Context(ctx).Timeout(FeedDetailTimeout(loadAllComments))
 	url := makeFeedDetailURL(feedID, xsecToken)
 
 	// 详情数据全部取自 __INITIAL_STATE__，图片和视频只是渲染出来给人看的，
@@ -224,6 +233,9 @@ func (f *FeedDetailAction) loadAllCommentsWithConfig(ctx context.Context, page *
 }
 
 func (cl *commentLoader) load(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	maxAttempts := cl.calculateMaxAttempts()
 
 	logrus.Info("开始加载评论...")
@@ -689,11 +701,16 @@ func calculateScrollDelta(viewportHeight int, baseRatio float64) float64 {
 }
 
 func scrollToCommentsArea(page *rod.Page) {
+	if page.GetContext().Err() != nil {
+		return
+	}
 	logrus.Info("滚动到评论区...")
 
 	// 先定位到评论区
 	if el, err := page.Timeout(2 * time.Second).Element(".comments-container"); err == nil {
-		el.MustScrollIntoView()
+		if err := scrollCommentElementIntoView(page, el); err != nil {
+			logrus.Debugf("定位评论区失败，继续尝试滚轮加载: %v", err)
+		}
 	}
 	// 等 scrollIntoView 动画落位
 	time.Sleep(400 * time.Millisecond)
@@ -705,6 +722,9 @@ func scrollToCommentsArea(page *rod.Page) {
 // smartScroll 向下滚动 delta 像素，触发评论区懒加载。
 // 按滚轮格逐格发送，每格幅度小幅浮动、格间留间隔。
 func smartScroll(page *rod.Page, delta float64) {
+	if page.GetContext().Err() != nil {
+		return
+	}
 	// 指针落在评论滚动容器上，滚轮才只作用于评论区（否则会滚整页）
 	moveToCommentScroller(page)
 
@@ -714,7 +734,7 @@ func smartScroll(page *rod.Page, delta float64) {
 			notch = remain
 		}
 
-		if err := page.Mouse.Scroll(0, notch, 1); err != nil {
+		if err := wheel(page, notch); err != nil {
 			return
 		}
 		remain -= notch
@@ -723,6 +743,32 @@ func smartScroll(page *rod.Page, delta float64) {
 			time.Sleep(scrollNotchInterval())
 		}
 	}
+}
+
+// wheel 在当前指针位置发一格滚轮，单格限时 5 秒。
+//
+// 不用 page.Mouse.Scroll：rod 的 Mouse 绑在建页时的原始 page 上，走 context.Background()，
+// 外层 page.Timeout 对它无效。渲染进程不回 Input.dispatchMouseEvent 时它永远不返回，
+// 线上实测一挂 5 天，连带浏览器名额永久不还。
+func wheel(page *rod.Page, deltaY float64) error {
+	pos := page.Mouse.Position()
+	return proto.InputDispatchMouseEvent{
+		Type:   proto.InputDispatchMouseEventTypeMouseWheel,
+		Button: proto.InputMouseButtonNone,
+		X:      pos.X,
+		Y:      pos.Y,
+		DeltaY: deltaY,
+	}.Call(page.Timeout(5 * time.Second))
+}
+
+// wheelSteps 分 steps 格滚动 total 像素，同 Mouse.Scroll，但每格都有超时（见 wheel）。
+func wheelSteps(page *rod.Page, total float64, steps int) error {
+	for i := 0; i < steps; i++ {
+		if err := wheel(page, total/float64(steps)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // scrollNotchSize 单格滚轮的幅度，围绕标准的 120px 浮动。
@@ -766,9 +812,23 @@ func moveToCommentScroller(page *rod.Page) {
 		})
 		return
 	}
-	vw := page.MustEval(`() => window.innerWidth`).Int()
-	vh := page.MustEval(`() => window.innerHeight`).Int()
-	_ = humanize.MoveTo(page, proto.Point{X: float64(vw) / 2, Y: float64(vh) / 2})
+	size, err := page.Eval(`() => [window.innerWidth, window.innerHeight]`)
+	if err != nil {
+		return
+	}
+	_ = humanize.MoveTo(page, proto.Point{X: size.Value.Get("0").Num() / 2, Y: size.Value.Get("1").Num() / 2})
+}
+
+// scrollCommentElementIntoView 只要求把评论滚入视口，不等待元素静止。
+// rod.ScrollIntoView 会先 WaitStableRAF：评论区动画、布局变化或隐藏节点
+// 会耗满查找元素时的 2 秒 deadline，MustScrollIntoView 再把它变成 panic，
+// 导致已经取得的笔记正文与评论一起丢失。这里直接调用同一个 CDP 滚动命令，
+// 给操作独立预算（仍继承页面取消），查找耗时不再挤占滚动时间。
+// 隐藏/脱离 DOM 的节点会返回 error，由调用方继续尝试滚轮懒加载。
+func scrollCommentElementIntoView(page *rod.Page, el *rod.Element) error {
+	ctx, cancel := context.WithTimeout(page.GetContext(), 2*time.Second)
+	defer cancel()
+	return proto.DOMScrollIntoViewIfNeeded{ObjectID: el.Object.ObjectID}.Call(el.Context(ctx))
 }
 
 func scrollToLastComment(page *rod.Page) {
@@ -779,7 +839,9 @@ func scrollToLastComment(page *rod.Page) {
 	}
 	// 滚动到最后一个评论
 	lastComment := elements[len(elements)-1]
-	lastComment.MustScrollIntoView()
+	if err := scrollCommentElementIntoView(page, lastComment); err != nil {
+		logrus.Debugf("定位末条评论失败，继续尝试滚轮加载: %v", err)
+	}
 }
 
 // ========== DOM 查询 ==========

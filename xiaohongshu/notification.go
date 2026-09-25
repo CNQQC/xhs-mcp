@@ -215,7 +215,7 @@ func (n *NotificationAction) loadUntil(ctx context.Context, page *rod.Page, tab 
 			return nil
 		}
 
-		if err := page.Mouse.Scroll(0, 800, 5); err != nil {
+		if err := wheelSteps(page, 800, 5); err != nil {
 			return fmt.Errorf("滚动加载失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BetweenScroll)
