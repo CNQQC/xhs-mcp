@@ -224,6 +224,9 @@ func (f *FeedDetailAction) loadAllCommentsWithConfig(ctx context.Context, page *
 }
 
 func (cl *commentLoader) load(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	maxAttempts := cl.calculateMaxAttempts()
 
 	logrus.Info("开始加载评论...")
@@ -689,11 +692,16 @@ func calculateScrollDelta(viewportHeight int, baseRatio float64) float64 {
 }
 
 func scrollToCommentsArea(page *rod.Page) {
+	if page.GetContext().Err() != nil {
+		return
+	}
 	logrus.Info("滚动到评论区...")
 
 	// 先定位到评论区
 	if el, err := page.Timeout(2 * time.Second).Element(".comments-container"); err == nil {
-		el.MustScrollIntoView()
+		if err := scrollCommentElementIntoView(page, el); err != nil {
+			logrus.Debugf("定位评论区失败，继续尝试滚轮加载: %v", err)
+		}
 	}
 	// 等 scrollIntoView 动画落位
 	time.Sleep(400 * time.Millisecond)
@@ -705,6 +713,9 @@ func scrollToCommentsArea(page *rod.Page) {
 // smartScroll 向下滚动 delta 像素，触发评论区懒加载。
 // 按滚轮格逐格发送，每格幅度小幅浮动、格间留间隔。
 func smartScroll(page *rod.Page, delta float64) {
+	if page.GetContext().Err() != nil {
+		return
+	}
 	// 指针落在评论滚动容器上，滚轮才只作用于评论区（否则会滚整页）
 	moveToCommentScroller(page)
 
@@ -766,9 +777,23 @@ func moveToCommentScroller(page *rod.Page) {
 		})
 		return
 	}
-	vw := page.MustEval(`() => window.innerWidth`).Int()
-	vh := page.MustEval(`() => window.innerHeight`).Int()
-	_ = humanize.MoveTo(page, proto.Point{X: float64(vw) / 2, Y: float64(vh) / 2})
+	size, err := page.Eval(`() => [window.innerWidth, window.innerHeight]`)
+	if err != nil {
+		return
+	}
+	_ = humanize.MoveTo(page, proto.Point{X: size.Value.Get("0").Num() / 2, Y: size.Value.Get("1").Num() / 2})
+}
+
+// scrollCommentElementIntoView 只要求把评论滚入视口，不等待元素静止。
+// rod.ScrollIntoView 会先 WaitStableRAF：评论区动画、布局变化或隐藏节点
+// 会耗满查找元素时的 2 秒 deadline，MustScrollIntoView 再把它变成 panic，
+// 导致已经取得的笔记正文与评论一起丢失。这里直接调用同一个 CDP 滚动命令，
+// 给操作独立预算（仍继承页面取消），查找耗时不再挤占滚动时间。
+// 隐藏/脱离 DOM 的节点会返回 error，由调用方继续尝试滚轮懒加载。
+func scrollCommentElementIntoView(page *rod.Page, el *rod.Element) error {
+	ctx, cancel := context.WithTimeout(page.GetContext(), 2*time.Second)
+	defer cancel()
+	return proto.DOMScrollIntoViewIfNeeded{ObjectID: el.Object.ObjectID}.Call(el.Context(ctx))
 }
 
 func scrollToLastComment(page *rod.Page) {
@@ -779,7 +804,9 @@ func scrollToLastComment(page *rod.Page) {
 	}
 	// 滚动到最后一个评论
 	lastComment := elements[len(elements)-1]
-	lastComment.MustScrollIntoView()
+	if err := scrollCommentElementIntoView(page, lastComment); err != nil {
+		logrus.Debugf("定位末条评论失败，继续尝试滚轮加载: %v", err)
+	}
 }
 
 // ========== DOM 查询 ==========
