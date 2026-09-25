@@ -48,7 +48,14 @@ func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTa
 	return fetchConcurrently(ctx, len(targets), feedBatchConcurrency,
 		func(ctx context.Context, i int) (*xiaohongshu.FeedDetailResponse, error) {
 			page := b.NewPage()
-			defer page.Close()
+			// 关页要有上限（见 service.go 的 pageCloseTimeout）。批量里更要紧：rod 的
+			// Page.Close 持有整个浏览器的 targetsLock，一个标签页关不掉，其余标签页的
+			// 开页、关页都会被这把锁堵住，整批挂死、名额不还。
+			defer func() {
+				if err := page.Timeout(pageCloseTimeout).Close(); err != nil {
+					logrus.Warnf("关闭第 %d 个标签页失败: %v", i+1, err)
+				}
+			}()
 
 			return xiaohongshu.NewFeedDetailAction(page).
 				GetFeedDetailWithConfig(ctx, targets[i].FeedID, targets[i].XsecToken, false, config)
