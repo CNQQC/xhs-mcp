@@ -49,13 +49,7 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 
 	status, err := s.xiaohongshuService.CheckLoginStatus(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "检查登录状态失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "检查登录状态失败: "+err.Error())
 	}
 
 	var resultText string
@@ -80,10 +74,7 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
 
 	result, err := s.xiaohongshuService.GetLoginQrcode(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "获取登录扫码图片失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取登录扫码图片失败: "+err.Error())
 	}
 
 	if result.IsLoggedIn {
@@ -121,10 +112,7 @@ func (s *AppServer) handleGetVerificationQrcode(ctx context.Context) *MCPToolRes
 
 	result, err := s.xiaohongshuService.GetVerificationQrcode(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "获取安全验证二维码失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取安全验证二维码失败: "+err.Error())
 	}
 
 	if !result.Blocked {
@@ -203,10 +191,7 @@ func (s *AppServer) handleDeleteCookies(ctx context.Context) *MCPToolResult {
 
 	err := s.xiaohongshuService.DeleteCookies(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "删除 cookies 失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "删除 cookies 失败: "+err.Error())
 	}
 
 	cookiePath := cookies.GetCookiesFilePath()
@@ -270,13 +255,7 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 
 	result, err := s.xiaohongshuService.PublishContent(ctx, req)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "发布失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "发布失败: "+err.Error())
 	}
 
 	resultText := fmt.Sprintf("内容发布成功: %+v", result)
@@ -339,13 +318,7 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 
 	result, err := s.xiaohongshuService.PublishVideo(ctx, req)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "发布失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "发布失败: "+err.Error())
 	}
 
 	resultText := fmt.Sprintf("视频发布成功: %+v", result)
@@ -363,20 +336,11 @@ func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
 
 	result, err := s.xiaohongshuService.ListFeeds(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "获取Feeds列表失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取Feeds列表失败: "+err.Error())
 	}
 
 	// 投影成只有可读内容的形状，句柄换成 ref（见 mcp_view.go）
-	jsonData, err := json.Marshal(noteListView{
-		Notes: toNoteViews(s.refs, result.Feeds),
-		Count: result.Count,
-	})
+	jsonData, err := json.Marshal(toNoteListView(s.refs, result.Feeds, "list"))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -421,19 +385,10 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 
 	result, err := s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "搜索Feeds失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "搜索Feeds失败: "+err.Error())
 	}
 
-	jsonData, err := json.Marshal(noteListView{
-		Notes: toNoteViews(s.refs, result.Feeds),
-		Count: result.Count,
-	})
+	jsonData, err := json.Marshal(toNoteListView(s.refs, result.Feeds, "search"))
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -552,13 +507,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 
 	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "获取Feed详情失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取Feed详情失败: "+err.Error())
 	}
 
 	// 投影时用请求时的 feedID/xsecToken，不用返回体里的：详情页 note.xsecToken
@@ -572,7 +521,9 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		return marshalResult(result, "获取Feed详情")
 	}
 
-	jsonData, err := json.Marshal(toNoteDetailView(s.refs, feedID, xsecToken, payload))
+	view := toNoteDetailView(s.refs, feedID, xsecToken, payload)
+	applyDetailRequestCoverage(&view, loadAll, config)
+	jsonData, err := json.Marshal(view)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -623,13 +574,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 
 	result, err := s.xiaohongshuService.UserProfile(ctx, userID, xsecToken, tab)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "获取用户主页失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取用户主页失败: "+err.Error())
 	}
 
 	jsonData, err := json.Marshal(
@@ -678,7 +623,7 @@ func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interfac
 		if unlike {
 			action = "取消点赞"
 		}
-		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: action + "失败: " + err.Error()}}, IsError: true}
+		return newMCPErrorResult(err, action+"失败: "+err.Error())
 	}
 
 	action := "点赞"
@@ -714,7 +659,7 @@ func (s *AppServer) handleFavoriteFeed(ctx context.Context, args map[string]inte
 		if unfavorite {
 			action = "取消收藏"
 		}
-		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: action + "失败: " + err.Error()}}, IsError: true}
+		return newMCPErrorResult(err, action+"失败: "+err.Error())
 	}
 
 	action := "收藏"
@@ -765,13 +710,7 @@ func (s *AppServer) handlePostComment(ctx context.Context, args map[string]inter
 
 	result, err := s.xiaohongshuService.PostCommentToFeed(ctx, feedID, xsecToken, content)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "发表评论失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "发表评论失败: "+err.Error())
 	}
 
 	resultText := fmt.Sprintf("评论发表成功 - Feed ID: %s", result.FeedID)
@@ -836,13 +775,7 @@ func (s *AppServer) handleReplyComment(ctx context.Context, args map[string]inte
 
 	result, err := s.xiaohongshuService.ReplyCommentToFeed(ctx, feedID, xsecToken, commentID, userID, content)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "回复评论失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "回复评论失败: "+err.Error())
 	}
 
 	responseText := fmt.Sprintf("评论回复成功 - Feed ID: %s, Comment ID: %s, User ID: %s", result.FeedID, result.TargetCommentID, result.TargetUserID)
@@ -860,13 +793,7 @@ func (s *AppServer) handleGetMyProfile(ctx context.Context, tab string) *MCPTool
 
 	result, err := s.xiaohongshuService.GetMyProfile(ctx, tab)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "获取我的主页失败: " + err.Error(),
-			}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取我的主页失败: "+err.Error())
 	}
 
 	jsonData, err := json.Marshal(
@@ -895,10 +822,7 @@ func (s *AppServer) handleGetUnreadCount(ctx context.Context) *MCPToolResult {
 
 	result, err := s.xiaohongshuService.GetUnreadCount(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "获取未读数失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取未读数失败: "+err.Error())
 	}
 
 	return marshalMCPResult(result, "获取未读数")
@@ -910,10 +834,7 @@ func (s *AppServer) handleListNotifications(ctx context.Context, tab string, lim
 
 	result, err := s.xiaohongshuService.ListNotifications(ctx, tab, limit)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "获取通知列表失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "获取通知列表失败: "+err.Error())
 	}
 
 	return marshalMCPResult(result, "获取通知列表")
@@ -925,10 +846,7 @@ func (s *AppServer) handleReplyNotification(ctx context.Context, commentID, cont
 
 	result, err := s.xiaohongshuService.ReplyNotification(ctx, commentID, content)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "回复失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "回复失败: "+err.Error())
 	}
 
 	return marshalMCPResult(result, "回复")
@@ -958,10 +876,7 @@ func (s *AppServer) handleLikeNotification(ctx context.Context, commentID string
 
 	result, err := s.xiaohongshuService.LikeNotification(ctx, commentID, unlike)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "点赞失败: " + err.Error()}},
-			IsError: true,
-		}
+		return newMCPErrorResult(err, "点赞失败: "+err.Error())
 	}
 
 	return marshalMCPResult(result, "点赞")

@@ -327,13 +327,11 @@ func (s *AppServer) favoriteFeedHandler(c *gin.Context) {
 
 // healthHandler 健康检查
 func healthHandler(c *gin.Context) {
-	respondSuccess(c, map[string]any{
-		"status":    "healthy",
-		"service":   "xiaohongshu-mcp",
-		"version":   version,
-		"account":   "github.com/xpzouying/xiaohongshu-mcp",
-		"timestamp": "now",
-	}, "服务正常")
+	data := diagnosticsSnapshot()
+	// 保留旧健康检查字段，同时明确它只代表进程存活。
+	data["status"] = "healthy"
+	data["account"] = "github.com/xpzouying/xiaohongshu-mcp"
+	respondSuccess(c, data, "进程正常；浏览器和登录状态未检查")
 }
 
 // myProfileHandler 我的信息

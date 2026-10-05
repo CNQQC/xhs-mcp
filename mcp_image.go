@@ -24,13 +24,13 @@ type FeedImageArgs struct {
 const feedImageMaxBytes = 10 << 20
 
 func imageToolError(err error) *MCPToolResult {
-	return &MCPToolResult{IsError: true, Content: []MCPContent{{Type: "text", Text: "获取笔记图片失败: " + err.Error()}}}
+	return newMCPErrorResult(err, "获取笔记图片失败: "+err.Error())
 }
 
 func (s *AppServer) handleGetFeedImage(ctx context.Context, args FeedImageArgs) *MCPToolResult {
 	target, ok := s.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 	if !ok {
-		return refError()
+		return refArgumentError(args.Ref, "feed_id")
 	}
 	index := args.ImageIndex
 	if index == 0 {
@@ -95,7 +95,7 @@ func feedImageResult(ctx context.Context, client *http.Client, images []xiaohong
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := client.Do(req)
 	if err != nil {
-		return imageToolError(fmt.Errorf("图片下载失败，请稍后重试"))
+		return newMCPErrorResult(err, "获取笔记图片失败: 图片下载失败，请稍后重试")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -103,7 +103,7 @@ func feedImageResult(ctx context.Context, client *http.Client, images []xiaohong
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, feedImageMaxBytes+1))
 	if err != nil {
-		return imageToolError(fmt.Errorf("读取图片失败"))
+		return newMCPErrorResult(err, "获取笔记图片失败: 读取图片失败")
 	}
 	if len(data) > feedImageMaxBytes {
 		return imageToolError(fmt.Errorf("图片超过 10 MiB 上限"))

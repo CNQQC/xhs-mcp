@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	xhserrors "github.com/xpzouying/xiaohongshu-mcp/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
 )
@@ -122,49 +123,75 @@ const errBatchRefExpired = "ref 无效或已过期，请重新调用 search_feed
 
 // handleGetFeedDetails 批量获取详情。单条失败只记在那一条上，不影响其余。
 func (s *AppServer) handleGetFeedDetails(ctx context.Context, args FeedDetailsArgs) *MCPToolResult {
+	return s.handleGetFeedDetailsWithFetch(ctx, args, func(ctx context.Context, targets []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
+		return s.xiaohongshuService.GetFeedDetails(ctx, targets, config)
+	})
+}
+
+// 注入抓取函数，离线验证部分失败、去重与输入顺序，不启动真实浏览器。
+func (s *AppServer) handleGetFeedDetailsWithFetch(ctx context.Context, args FeedDetailsArgs,
+	fetch func(context.Context, []refTarget, xiaohongshu.FeedDetailConfig) []feedDetailResult,
+) *MCPToolResult {
 	if len(args.Refs) == 0 {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "批量获取Feed详情失败: refs 不能为空"}},
-			IsError: true,
-		}
+		return newMCPErrorResult(xhserrors.ErrInvalidArgument, "批量获取Feed详情失败: refs 不能为空")
 	}
 	if len(args.Refs) > feedBatchMax {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: fmt.Sprintf(
-				"批量获取Feed详情失败: 一次最多 %d 条，本次 %d 条，请分批调用", feedBatchMax, len(args.Refs))}},
-			IsError: true,
-		}
+		return newMCPErrorResult(xhserrors.ErrInvalidArgument, fmt.Sprintf(
+			"批量获取Feed详情失败: 一次最多 %d 条，本次 %d 条，请分批调用", feedBatchMax, len(args.Refs)))
 	}
 
-	// 先解 ref，解不出的直接记失败，不占浏览器
+	// 相同笔记与访问令牌只抓一次；返回项仍严格保持请求的数量、顺序和 ref。
 	notes := make([]noteBatchItem, len(args.Refs))
 	var targets []refTarget
-	var pos []int // targets[j] 对应 notes[pos[j]]
+	var positions [][]int
+	type fetchKey struct{ feedID, token string }
+	seen := make(map[fetchKey]int)
+	setFailure := func(i int, target refTarget, err error, message string) {
+		info := classifyMCPError(err, message)
+		info.RequestID = requestIDFromContext(ctx)
+		notes[i] = noteBatchItem{
+			noteDetailView: noteDetailView{Ref: args.Refs[i], NoteID: target.FeedID},
+			Error:          message, ErrorInfo: info,
+		}
+	}
 	for i, ref := range args.Refs {
 		target, ok := s.refs.lookup(ref)
 		if !ok {
-			notes[i] = noteBatchItem{noteDetailView: noteDetailView{Ref: ref}, Error: errBatchRefExpired}
+			setFailure(i, refTarget{}, xhserrors.ErrRefExpired, errBatchRefExpired)
 			continue
 		}
+		key := fetchKey{target.FeedID, target.XsecToken}
+		if j, exists := seen[key]; exists {
+			positions[j] = append(positions[j], i)
+			continue
+		}
+		seen[key] = len(targets)
 		targets = append(targets, target)
-		pos = append(pos, i)
+		positions = append(positions, []int{i})
 	}
 
-	logrus.Infof("MCP: 批量获取Feed详情 - 共 %d 条，有效 %d 条", len(args.Refs), len(targets))
-
+	logrus.Infof("MCP: 批量获取Feed详情 - 共 %d 条，去重后有效 %d 条", len(args.Refs), len(targets))
 	if len(targets) > 0 {
 		config := xiaohongshu.DefaultFeedDetailConfig()
 		config.IncludeImages = args.IncludeImages
-
-		for j, r := range s.xiaohongshuService.GetFeedDetails(ctx, targets, config) {
-			i := pos[j]
-			if r.err != nil {
-				notes[i] = noteBatchItem{noteDetailView: noteDetailView{Ref: args.Refs[i]}, Error: r.err.Error()}
-				continue
+		results := fetch(ctx, targets, config)
+		for j, target := range targets {
+			r := feedDetailResult{err: fmt.Errorf("内部错误: 批量详情未返回结果")}
+			if j < len(results) {
+				r = results[j]
 			}
-			view := toNoteDetailView(s.refs, targets[j].FeedID, targets[j].XsecToken, r.detail)
-			view.Ref = args.Refs[i] // 带回调用方给的 ref，按 ref 就能对上号
-			notes[i] = noteBatchItem{noteDetailView: view}
+			if r.err == nil && r.detail == nil {
+				r.err = fmt.Errorf("内部错误: 批量详情返回空结果")
+			}
+			for _, i := range positions[j] {
+				if r.err != nil {
+					setFailure(i, target, r.err, r.err.Error())
+					continue
+				}
+				view := toNoteDetailViewWithRef(s.refs, target.FeedID, target.XsecToken, r.detail, args.Refs[i])
+				applyDetailRequestCoverage(&view, false, config)
+				notes[i] = noteBatchItem{noteDetailView: view}
+			}
 		}
 	}
 

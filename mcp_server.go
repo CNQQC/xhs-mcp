@@ -58,7 +58,7 @@ type FeedDetailArgs struct {
 	Ref              string `json:"ref,omitempty" jsonschema:"笔记的 ref，取自 search_feeds / list_feeds 返回的 ref 字段。传了 ref 就不用再传 feed_id 和 xsec_token"`
 	FeedID           string `json:"feed_id,omitempty" jsonschema:"小红书笔记ID。没有 ref 时才需要，要和 xsec_token 一起给"`
 	XsecToken        string `json:"xsec_token,omitempty" jsonschema:"访问令牌。没有 ref 时才需要，要和 feed_id 一起给"`
-	LoadAllComments  bool   `json:"load_all_comments,omitempty" jsonschema:"是否加载全部评论。false仅返回前10条一级评论（默认），true滚动加载更多评论"`
+	LoadAllComments  bool   `json:"load_all_comments,omitempty" jsonschema:"是否加载全部评论。false仅返回首屏已加载的评论（默认，不保证固定条数），true滚动加载更多评论"`
 	Limit            int    `json:"limit,omitempty" jsonschema:"【仅当load_all_comments为true时生效】限制加载的一级评论数量。例如20表示最多加载20条，默认20"`
 	ClickMoreReplies bool   `json:"click_more_replies,omitempty" jsonschema:"【仅当load_all_comments为true时生效】是否展开二级回复。true展开子评论，false不展开（默认）"`
 	ReplyLimit       int    `json:"reply_limit,omitempty" jsonschema:"【仅当click_more_replies为true时生效】跳过回复数过多的评论。例如10表示跳过超过10条回复的，默认10"`
@@ -137,7 +137,7 @@ func InitMCPServer(appServer *AppServer) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "xiaohongshu-mcp",
-			Version: "2.0.0",
+			Version: currentBuildIdentity().Version,
 		},
 		nil,
 	)
@@ -156,34 +156,57 @@ func withPanicRecovery[T any](
 ) func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error) {
 
 	return func(ctx context.Context, req *mcp.CallToolRequest, args T) (result *mcp.CallToolResult, resp any, err error) {
+		requestID := newMCPRequestID()
+		ctx = context.WithValue(ctx, mcpRequestIDKey{}, requestID)
+		logger := logrus.WithFields(logrus.Fields{"tool": toolName, "request_id": requestID})
 		defer func() {
-			if r := recover(); r != nil {
-				logrus.WithFields(logrus.Fields{
-					"tool":  toolName,
-					"panic": r,
-				}).Error("Tool handler panicked")
-
-				logrus.Errorf("Stack trace:\n%s", debug.Stack())
-
-				result = &mcp.CallToolResult{
-					Content: []mcp.Content{
-						&mcp.TextContent{
-							Text: fmt.Sprintf("工具 %s 执行时发生内部错误: %v\n\n请查看服务端日志获取详细信息。", toolName, r),
-						},
-					},
-					IsError: true,
+			if recovered := recover(); recovered != nil {
+				logger.WithField("panic", recovered).Errorf("Tool handler panicked\n%s", debug.Stack())
+				var cause error
+				if value, ok := recovered.(error); ok {
+					cause = value
+				} else if ctx.Err() != nil {
+					cause = ctx.Err()
+				} else {
+					cause = fmt.Errorf("%v", recovered)
 				}
-				resp = nil
-				err = nil
+				info := classifyMCPError(cause, "内部错误")
+				result = convertToMCPResult(newMCPErrorResult(info, info.Message))
+				resp, err = nil, nil
+			} else if err != nil {
+				logger.WithError(err).Error("Tool handler failed")
+				info := classifyMCPError(err, "")
+				result = convertToMCPResult(newMCPErrorResult(info, info.Message))
+				resp, err = nil, nil
 			}
+			if resp != nil {
+				if result == nil {
+					result = &mcp.CallToolResult{}
+				}
+				result.StructuredContent = resp
+				resp = nil
+			}
+			result = decorateMCPResult(result, requestID)
+			guardMutationRetry(toolName, result)
+			logger.WithField("is_error", result.IsError).Info("Tool handler completed")
 		}()
-
 		return handler(ctx, req, args)
 	}
 }
 
 // registerTools 注册所有 MCP 工具
 func registerTools(server *mcp.Server, appServer *AppServer) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_diagnostics",
+		Description: "返回进程存活状态、实际构建版本及基础限制。不启动浏览器、不检查登录、不读取 cookies；alive 仅表示进程存活，不能作为小红书已登录或浏览器可用的证据。",
+		Annotations: &mcp.ToolAnnotations{Title: "Get Diagnostics", ReadOnlyHint: true},
+	}, withPanicRecovery("get_diagnostics", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		snapshot := diagnosticsSnapshot()
+		result := marshalResult(snapshot, "获取诊断")
+		result.StructuredContent = snapshot
+		return convertToMCPResult(result), nil, nil
+	}))
+
 	// 工具 1: 检查登录状态
 	mcp.AddTool(server,
 		&mcp.Tool{
@@ -295,7 +318,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_detail",
-			Description: "获取小红书笔记详情，返回笔记正文、作者、发布时间与 IP 归属地、互动数据（点赞/评论/收藏数）及评论列表。笔记和每条评论都带 ref：回复某条评论时把该评论的 ref 传给 reply_comment_in_feed 即可。图片默认只给张数 images，需要每张图的尺寸与地址时设 include_images=true（不返回可见图片）。只有明确需要识图、OCR 或分析构图时才调用 get_feed_image；普通正文阅读与总结不要取图。视频笔记额外返回 video 字段，其中 subtitleText 是字幕正文（已去掉时间轴的完整文字转录，subtitleLang 为语种）——视频画面读不了，这段文字就是视频的可读内容，讲解/教程类视频尤其值得看。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
+			Description: "获取小红书笔记详情，返回笔记正文、作者、发布时间与 IP 归属地、互动数据（点赞/评论/收藏数）及评论列表。笔记和每条评论都带 ref：回复某条评论时把该评论的 ref 传给 reply_comment_in_feed 即可。图片默认只给张数 images，需要每张图的尺寸与地址时设 include_images=true（不返回可见图片）。只有明确需要识图、OCR 或分析构图时才调用 get_feed_image；普通正文阅读与总结不要取图。视频笔记在可获取时返回顶层 subtitle 字幕正文与 subtitleLang 语种；字幕可能缺失或不完整，不能当作完整视频转录，也不代表看过视频画面。请结合 coverage 和 warnings 判断内容覆盖情况。默认返回首屏已加载的评论（不保证固定条数），如需更多评论请设置load_all_comments=true",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
@@ -304,7 +327,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("get_feed_detail", func(ctx context.Context, req *mcp.CallToolRequest, args FeedDetailArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "feed_id")), nil, nil
 			}
 
 			argsMap := map[string]interface{}{
@@ -346,7 +369,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_details",
-			Description: "批量获取多条小红书笔记详情，一次最多6条，并发抓取、一次返回，比逐条调用 get_feed_detail 更快。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、前10条一级评论），返回的 notes 与 refs 一一对应（顺序相同、ref 原样带回）；单条失败时该条只有 ref 和 error，不影响其余。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
+			Description: "批量获取多条小红书笔记详情，一次最多6条，并发抓取、一次返回，比逐条调用 get_feed_detail 更快。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、首屏已加载的评论），返回的 notes 与 refs 一一对应（顺序相同、ref 原样带回）；单条失败时保留 ref、原始 error 文本及结构化 error_info（code、retryable、next_action、request_id），不影响其余。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Details (Batch)",
 				ReadOnlyHint: true,
@@ -382,7 +405,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("user_profile", func(ctx context.Context, req *mcp.CallToolRequest, args UserProfileArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveUser(args.Ref, args.UserID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "user_id")), nil, nil
 			}
 
 			argsMap := map[string]interface{}{
@@ -408,7 +431,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("post_comment_to_feed", func(ctx context.Context, req *mcp.CallToolRequest, args PostCommentArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "feed_id")), nil, nil
 			}
 
 			argsMap := map[string]interface{}{
@@ -434,7 +457,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("reply_comment_in_feed", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyCommentArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "feed_id")), nil, nil
 			}
 
 			// 评论 ref 自带 comment_id 和评论者 user_id，两者都从 ref 取；
@@ -501,7 +524,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("like_feed", func(ctx context.Context, req *mcp.CallToolRequest, args LikeFeedArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "feed_id")), nil, nil
 			}
 
 			argsMap := map[string]interface{}{
@@ -527,7 +550,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		withPanicRecovery("favorite_feed", func(ctx context.Context, req *mcp.CallToolRequest, args FavoriteFeedArgs) (*mcp.CallToolResult, any, error) {
 			target, ok := appServer.resolveFeed(args.Ref, args.FeedID, args.XsecToken)
 			if !ok {
-				return convertToMCPResult(refError()), nil, nil
+				return convertToMCPResult(refArgumentError(args.Ref, "feed_id")), nil, nil
 			}
 
 			argsMap := map[string]interface{}{
@@ -579,7 +602,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			Description: "获取通知列表。返回评论内容、评论者、以及对应笔记的 feed_id 和 xsec_token（可用于 get_feed_detail 读原帖）。已删除或不可见的条目会被过滤，过滤数量见 filtered 字段。注意：会清除该分区的未读标记，只需要未读数时用 get_unread_count。",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Notifications",
-				ReadOnlyHint: true,
+				ReadOnlyHint: false,
 			},
 		},
 		withPanicRecovery("list_notifications", func(ctx context.Context, req *mcp.CallToolRequest, args ListNotificationsArgs) (*mcp.CallToolResult, any, error) {
@@ -640,11 +663,14 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 21)
+	logrus.Infof("Registered %d MCP tools", 22)
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式
 func convertToMCPResult(result *MCPToolResult) *mcp.CallToolResult {
+	if result == nil {
+		return &mcp.CallToolResult{}
+	}
 	var contents []mcp.Content
 	for _, c := range result.Content {
 		switch c.Type {
@@ -669,8 +695,9 @@ func convertToMCPResult(result *MCPToolResult) *mcp.CallToolResult {
 	}
 
 	return &mcp.CallToolResult{
-		Content: contents,
-		IsError: result.IsError,
+		Content:           contents,
+		IsError:           result.IsError,
+		StructuredContent: result.StructuredContent,
 	}
 }
 
