@@ -934,6 +934,9 @@ Basic configuration template:
 
 After successful connection, you can use the following MCP tools:
 
+See [MCP research contract](docs/MCP_RESEARCH.md) for provenance, coverage, and diagnostics.
+
+- `get_diagnostics` - Lightweight process/build diagnostics; does not launch a browser or verify login
 - `check_login_status` - Check RedNote login status (no parameters)
 - `get_login_qrcode` - Get login QR code, returns Base64 image and timeout (no parameters)
 - `delete_cookies` - Delete cookies file, reset login status, requires re-login after deletion (no parameters)
@@ -958,24 +961,30 @@ After successful connection, you can use the following MCP tools:
     - `publish_time`: Publish time - `不限` / any (default) | `一天内` / last day | `一周内` / last week | `半年内` / last 6 months
     - `search_scope`: Search scope - `不限` / any (default) | `已看过` / viewed | `未看过` / not viewed | `已关注` / followed
     - `location`: Location - `不限` / any (default) | `同城` / same city | `附近` / nearby
-- `get_feed_detail` - Get post details including interaction data and comments (required: feed_id, xsec_token)
-  - `load_all_comments`: Whether to load all comments (optional), default false returns only first 10 top-level comments
+- `get_feed_detail` - Get post details including interaction data and comments (pass ref, or both feed_id and xsec_token)
+  - `load_all_comments`: Whether to load all comments (optional), default false returns loaded first-screen comments; count is determined by the site
   - `limit`: Limit number of top-level comments to load (optional), only effective when load_all_comments=true, default 20
   - `click_more_replies`: Whether to expand nested replies (optional), only effective when load_all_comments=true, default false
   - `reply_limit`: Skip comments with too many replies (optional), only effective when click_more_replies=true, default 10
   - `scroll_speed`: Scroll speed (optional), `slow` | `normal` | `fast`, only effective when load_all_comments=true
 - `get_feed_details` - **Added in this fork.** Fetch details for multiple notes in one call (required: refs, up to 6)
   - Holds a single browser slot and opens 2 tabs concurrently inside it, returning all results at once
-  - Each item matches the default `get_feed_detail` output (including the first 10 top-level comments); `notes` keeps the order of `refs`
-  - A failed item only carries `ref` and `error`; the rest are unaffected. Use `get_feed_detail` with load_all_comments=true for more comments
+  - Each item matches the default `get_feed_detail` output (loaded first-screen comments); `notes` keeps the order of `refs`
+  - A failed item carries `ref`, legacy `error`, and structured `error_info`; the rest are unaffected. Use `get_feed_detail` with load_all_comments=true for more comments
   - `include_images`: Whether to include each image's size and URL (optional), default false
-- `post_comment_to_feed` - Post comments to RedNote posts (required: feed_id, xsec_token, content)
-- `reply_comment_in_feed` - Reply to a specific comment under a note (required: feed_id, xsec_token, content, and at least one of comment_id or user_id)
-- `like_feed` - Like / unlike a note (required: feed_id, xsec_token)
+- `post_comment_to_feed` - Post comments to RedNote posts (required: content, plus ref or feed_id+xsec_token)
+- `reply_comment_in_feed` - Reply to a specific comment under a note (required: content and a comment ref; without ref, supply feed_id, xsec_token, and at least one of comment_id or user_id)
+- `like_feed` - Like / unlike a note (pass ref, or both feed_id and xsec_token)
   - `unlike`: Whether to unlike (optional), true to unlike, default is like
-- `favorite_feed` - Favorite / unfavorite a note (required: feed_id, xsec_token)
+- `favorite_feed` - Favorite / unfavorite a note (pass ref, or both feed_id and xsec_token)
   - `unfavorite`: Whether to unfavorite (optional), true to unfavorite, default is favorite
-- `user_profile` - Get user profile information (required: user_id, xsec_token)
+- `user_profile` - Get user profile (pass note/comment ref, or both user_id and xsec_token); tab: note/fav/liked
+- `get_my_profile` - Current account profile; tab: note/fav/liked
+- `get_feed_image` - View a note image on demand; see tools/list for arguments
+- `get_unread_count` - Notification unread counts
+- `list_notifications` - Notification list; opening a tab marks notifications read (not read-only)
+- `reply_notification` / `like_notification` - Reply to / like comments from notifications
+- `get_verification_qrcode` - Retrieve a security-verification QR code for the account owner; never bypasses verification
 
 ### 2.4. Usage Examples
 

@@ -118,6 +118,9 @@ type VideoCapability struct {
 type FeedDetailResponse struct {
 	Note     FeedDetail  `json:"note"`
 	Comments CommentList `json:"comments"`
+	// CommentsLoadWarning 仅供 MCP 投影使用，不进入 REST 返回体。
+	// 可选评论加载失败不能导致笔记正文一并失败。
+	CommentsLoadWarning string `json:"-"`
 }
 
 // FeedDetail 表示详情页的笔记内容
@@ -165,6 +168,9 @@ type VideoDetail struct {
 	SubtitleText string `json:"subtitleText,omitempty"`
 	// SubtitleLang SubtitleText 对应的语言。
 	SubtitleLang string `json:"subtitleLang,omitempty"`
+	// 完整性元数据单独保存，保持 REST 返回体兼容。
+	SubtitleStatus  string `json:"-"`
+	SubtitleWarning string `json:"-"`
 }
 
 // UnmarshalJSON 额外解开 mediaV2。
@@ -172,26 +178,60 @@ type VideoDetail struct {
 // 所以只取字幕，不把整个副本塞进返回体。
 func (v *VideoDetail) UnmarshalJSON(data []byte) error {
 	type alias VideoDetail // 借别名避免递归调用本方法
+	var decoded alias
 	aux := struct {
-		MediaV2 string `json:"mediaV2"`
+		MediaV2   json.RawMessage `json:"mediaV2"`
+		Subtitles json.RawMessage `json:"subtitles"`
 		*alias
-	}{alias: (*alias)(v)}
+	}{alias: &decoded}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if aux.MediaV2 == "" {
+	*v = VideoDetail(decoded)
+	v.SubtitleStatus = "unknown"
+	readIndex := func(data json.RawMessage) {
+		if len(data) == 0 || string(data) == "null" {
+			return
+		}
+		var subtitles map[string][]VideoSubtitle
+		if err := json.Unmarshal(data, &subtitles); err != nil {
+			v.SubtitleStatus = "failed"
+			v.SubtitleWarning = "字幕索引解析失败，无法判断字幕是否可用"
+			return
+		}
+		v.Subtitles = subtitles
+		v.SubtitleWarning = ""
+		v.SubtitleStatus = "unknown"
+		if subtitles != nil && len(subtitles) == 0 {
+			v.SubtitleStatus = "unavailable"
+		}
+	}
+	readIndex(aux.Subtitles)
+	if len(aux.MediaV2) == 0 || string(aux.MediaV2) == "null" {
+		return nil
+	}
+	var mediaV2 string
+	if err := json.Unmarshal(aux.MediaV2, &mediaV2); err != nil {
+		v.SubtitleStatus = "failed"
+		v.SubtitleWarning = "字幕索引解析失败，无法判断字幕是否可用"
+		return nil
+	}
+	if mediaV2 == "" {
 		return nil
 	}
 
 	var v2 struct {
 		Video struct {
-			Subtitles map[string][]VideoSubtitle `json:"subtitles"`
+			Subtitles json.RawMessage `json:"subtitles"`
 		} `json:"video"`
 	}
-	// 字幕属于附加信息，解不出不影响视频地址，静默跳过
-	if err := json.Unmarshal([]byte(aux.MediaV2), &v2); err == nil {
-		v.Subtitles = v2.Video.Subtitles
+	// 字幕属于附加信息，解不出不影响正文，但调用方必须知道这不是「没有字幕」。
+	if err := json.Unmarshal([]byte(mediaV2), &v2); err == nil {
+		readIndex(v2.Video.Subtitles)
+	} else {
+		v.SubtitleStatus = "failed"
+		v.SubtitleWarning = "字幕索引解析失败，无法判断字幕是否可用"
 	}
 	return nil
 }
@@ -218,6 +258,29 @@ type CommentList struct {
 	List    []Comment `json:"list"`
 	Cursor  string    `json:"cursor"`
 	HasMore bool      `json:"hasMore"`
+	// 区分字段缺失与明确的 false，不改变 REST JSON。
+	HasMoreKnown       bool  `json:"-"`
+	FirstRequestFinish *bool `json:"-"`
+}
+
+func (c *CommentList) UnmarshalJSON(data []byte) error {
+	type alias CommentList
+	var decoded alias
+	aux := struct {
+		HasMore            *bool `json:"hasMore"`
+		FirstRequestFinish *bool `json:"firstRequestFinish"`
+		*alias
+	}{alias: &decoded}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*c = CommentList(decoded)
+	c.HasMoreKnown = aux.HasMore != nil
+	if aux.HasMore != nil {
+		c.HasMore = *aux.HasMore
+	}
+	c.FirstRequestFinish = aux.FirstRequestFinish
+	return nil
 }
 
 // Comment 表示单条评论

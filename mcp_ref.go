@@ -76,18 +76,39 @@ func newRefTag() string {
 
 // put 登记一个句柄，返回短 ref。
 func (t *refTable) put(target refTarget) string {
+	ref, _, _ := t.putWithMetadata(target)
+	return ref
+}
+
+// putWithMetadata 返回登记时间及实际存入表中的有效期。
+// 读取元数据不会刷新或延长 ref 的有效期。
+func (t *refTable) putWithMetadata(target refTarget) (string, time.Time, time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.seq++
 	ref := fmt.Sprintf("%s%d", t.tag, t.seq)
-	t.items[ref] = refEntry{target: target, seq: t.seq, expiresAt: time.Now().Add(refTTL)}
+	now := time.Now().UTC()
+	expiresAt := now.Add(refTTL)
+	t.items[ref] = refEntry{target: target, seq: t.seq, expiresAt: expiresAt}
 
 	if len(t.items) > refMaxEntries {
 		t.evictLocked()
 	}
 
-	return ref
+	return ref, now, expiresAt
+}
+
+// expiresAt 返回当前 ref 的实际有效期，不续期。
+// 容量淘汰或进程重启仍可能令 ref 提前失效。
+func (t *refTable) expiresAt(ref string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	item, ok := t.items[ref]
+	if !ok || !time.Now().Before(item.expiresAt) {
+		return ""
+	}
+	return item.expiresAt.UTC().Format(time.RFC3339Nano)
 }
 
 // lookup 查一个 ref。查不到、过期，一律 false——上层给同一句「重新搜索」。
@@ -99,7 +120,7 @@ func (t *refTable) lookup(ref string) (refTarget, bool) {
 	if !ok {
 		return refTarget{}, false
 	}
-	if time.Now().After(item.expiresAt) {
+	if !time.Now().Before(item.expiresAt) {
 		delete(t.items, ref)
 		return refTarget{}, false
 	}
@@ -113,7 +134,7 @@ func (t *refTable) lookup(ref string) (refTarget, bool) {
 func (t *refTable) evictLocked() {
 	now := time.Now()
 	for ref, item := range t.items {
-		if now.After(item.expiresAt) {
+		if !now.Before(item.expiresAt) {
 			delete(t.items, ref)
 		}
 	}

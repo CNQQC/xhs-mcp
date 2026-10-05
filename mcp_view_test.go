@@ -26,10 +26,8 @@ func sampleFeed() xiaohongshu.Feed {
 	}
 }
 
-// TestNoteViewHasNoMachineFields MCP 返回体里不该再出现任何机器句柄。
-//
-// 这是这一整套投影层存在的理由：id、xsecToken、userId 对模型零阅读价值，
-// 却按条数成倍出现。谁把它们加回来，这里先红。
+// TestNoteViewHasNoMachineFields 不输出用户内部句柄或原始卡片结构；
+// 稳定笔记 ID 与编码后的来源链接用于研究引用，允许保留。
 func TestNoteViewHasNoMachineFields(t *testing.T) {
 	tbl := newRefTable()
 
@@ -41,13 +39,13 @@ func TestNoteViewHasNoMachineFields(t *testing.T) {
 	got := string(data)
 
 	for _, machine := range []string{
-		"65f1a2b3c4d5e6f7a8b9c0d1",                   // feed id
-		"ABQpXKvL3nR8mYt2wZ7hJ4dF6sQ9bN1cE5gA0uI3oP", // xsecToken
-		"5d8f2a1b000000000102e3c4",                   // 作者 userId
+		"5d8f2a1b000000000102e3c4", // 作者 userId
 		"xsecToken", "userId", "noteCard", "displayTitle", "interactInfo",
 	} {
 		assert.NotContains(t, got, machine, "返回体里不该再有 %s", machine)
 	}
+	assert.Equal(t, sampleFeed().ID, views[0].NoteID)
+	assert.Contains(t, views[0].SourceURL, "/explore/"+sampleFeed().ID)
 
 	// 能读的东西要在
 	for _, keep := range []string{"周末露营装备清单", "露营小分队", "1.7万", "890", "6512", "186"} {

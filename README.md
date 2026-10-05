@@ -1060,7 +1060,9 @@ npx mcporter list xiaohongshu-mcp
 
 ### 2.3. 可用 MCP 工具
 
-连接成功后，可使用以下 MCP 工具：
+连接成功后，可使用以下 MCP 工具。研究返回字段、覆盖率和诊断契约见 [MCP 研究接口说明](docs/MCP_RESEARCH.md)：
+
+- `get_diagnostics` - 轻量进程诊断和实际构建信息（无参数，不启动浏览器，不验证登录）
 
 - `check_login_status` - 检查小红书登录状态（无参数）
 - `get_login_qrcode` - 获取登录二维码，返回 Base64 图片和超时时间（无参数）
@@ -1086,28 +1088,33 @@ npx mcporter list xiaohongshu-mcp
     - `publish_time`: 发布时间 - `不限`（默认）| `一天内` | `一周内` | `半年内`
     - `search_scope`: 搜索范围 - `不限`（默认）| `已看过` | `未看过` | `已关注`
     - `location`: 位置距离 - `不限`（默认）| `同城` | `附近`
-- `get_feed_detail` - 获取帖子详情，包括互动数据和评论（必需：feed_id, xsec_token）
-  - `load_all_comments`: 是否加载全部评论（可选），默认 false 仅返回前 10 条一级评论
+- `get_feed_detail` - 获取帖子详情，包括互动数据和评论（传 ref，或同时传 feed_id、xsec_token）
+  - `load_all_comments`: 是否加载全部评论（可选），默认 false 仅取首屏已加载评论，数量由站点决定
   - `limit`: 限制加载的一级评论数量（可选），仅当 load_all_comments=true 时生效，默认 20
   - `click_more_replies`: 是否展开二级回复（可选），仅当 load_all_comments=true 时生效，默认 false
   - `reply_limit`: 跳过回复数过多的评论（可选），仅当 click_more_replies=true 时生效，默认 10
   - `scroll_speed`: 滚动速度（可选），`slow` | `normal` | `fast`，仅当 load_all_comments=true 时生效
-  - 🆕 **本仓库新增**：视频笔记会额外返回 `video.subtitleText`——服务端下载好字幕、
-    去掉时间轴后的完整台词文本。视频画面模型读不了，字幕能读。
+  - 🆕 **本仓库新增**：视频笔记会额外返回 `subtitle`（MCP）或 `video.subtitleText`（REST）——服务端下载好字幕、
+    去掉时间轴后的台词文本；请结合 `coverage.subtitle` 和 `warnings` 判断是否可用或截断
   - 🆕 **本仓库新增**：笔记与评论的时间戳同时给出可读格式，模型不用自己换算
 - 🆕 `get_feed_details` - **本仓库新增**。批量获取笔记详情（必需：refs，一次最多 6 条）
   - 只占一个浏览器名额，在同一个浏览器里并发开 2 个标签页抓取，一次返回全部结果；
     比逐条调 `get_feed_detail` 省掉了每条都要起一次浏览器的开销，也少了模型来回的轮次
-  - 每条内容与 `get_feed_detail` 默认返回一致（含前 10 条一级评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
-  - 单条失败只在那一条上给出 `error`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
+  - 每条内容与 `get_feed_detail` 默认返回一致（首屏已加载评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
+  - 单条失败在该条给出兼容的 `error` 和结构化 `error_info`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
   - `include_images`: 是否连每张图的尺寸与地址一起返回（可选），默认 false
-- `post_comment_to_feed` - 发表评论到小红书帖子（必需：feed_id, xsec_token, content）
-- `reply_comment_in_feed` - 回复笔记下的指定评论（必需：feed_id, xsec_token, content，以及 comment_id 或 user_id 至少一个）
-- `like_feed` - 点赞/取消点赞（必需：feed_id, xsec_token）
+- `post_comment_to_feed` - 发表评论到小红书帖子（必需：content，以及 ref 或 feed_id+xsec_token）
+- `reply_comment_in_feed` - 回复笔记下的指定评论（必需：content 和评论 ref；无 ref 时需 feed_id、xsec_token，以及 comment_id 或 user_id 至少一个）
+- `like_feed` - 点赞/取消点赞（传 ref，或同时传 feed_id、xsec_token）
   - `unlike`: 是否取消点赞（可选），true 为取消点赞，默认为点赞
-- `favorite_feed` - 收藏/取消收藏（必需：feed_id, xsec_token）
+- `favorite_feed` - 收藏/取消收藏（传 ref，或同时传 feed_id、xsec_token）
   - `unfavorite`: 是否取消收藏（可选），true 为取消收藏，默认为收藏
-- `user_profile` - 获取用户个人主页信息（必需：user_id, xsec_token）
+- `user_profile` - 获取用户个人主页信息（传笔记或评论 ref，或同时传 user_id、xsec_token）；`tab` 为 note/fav/liked
+- `get_my_profile` - 当前账号主页；`tab` 为 note/fav/liked
+- `get_feed_image` - 按需查看笔记图片，参数以 tools/list 的 schema 为准
+- `get_unread_count` - 获取通知未读数
+- `list_notifications` - 获取通知列表；进入对应分区会标记已读，因此不是无副作用读取
+- `reply_notification` / `like_notification` - 回复/点赞通知中的评论
 - 🆕 `get_verification_qrcode` - **本仓库新增**。被小红书安全验证拦截时，取回服务端会话里
   的那张验证二维码交给账号本人扫（无参数）
   - 同时会给出一条一次性验证网页链接，手机浏览器直接打开就是一张大二维码、过期自动换新、

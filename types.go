@@ -22,8 +22,9 @@ type SuccessResponse struct {
 
 // MCPToolResult MCP 工具结果（内部使用）
 type MCPToolResult struct {
-	Content []MCPContent `json:"content"`
-	IsError bool         `json:"isError,omitempty"`
+	Content           []MCPContent   `json:"content"`
+	IsError           bool           `json:"isError,omitempty"`
+	StructuredContent map[string]any `json:"structuredContent,omitempty"`
 }
 
 // MCPContent MCP 内容（内部使用）

@@ -27,7 +27,7 @@ func main() {
 		token = os.Getenv("AUTH_TOKEN")
 	}
 
-	logrus.Infof("xiaohongshu-mcp version: %s", version)
+	logrus.Infof("xiaohongshu-mcp version: %s", currentBuildIdentity().Version)
 
 	// 只用内置浏览器。启动时就备好，缺它直接退出，不拖到第一个请求才失败。
 	binPath, err := browser.EnsureBrowser()

@@ -109,8 +109,8 @@ const firstCommentsTimeout = 15 * time.Second
 
 // waitFirstComments 等首屏评论请求完成（comments.firstRequestFinish，无评论的笔记同样会置 true）。
 // 评论是详情数据落地后前端另发请求取的：单页约 6 秒，同一浏览器多页并发时要十几秒。
-// 不等就提取，评论列表是空的。等不到只记日志，正文照常返回。
-func waitFirstComments(page *rod.Page, feedID string) {
+// 不等就提取，评论列表是空的。等不到时记录日志与完整性告警，正文照常返回。
+func waitFirstComments(page *rod.Page, feedID string) error {
 	err := page.Timeout(firstCommentsTimeout).Wait(rod.Eval(`(id) => {
 		const m = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.note && window.__INITIAL_STATE__.note.noteDetailMap;
 		const c = m && m[id] && m[id].comments;
@@ -119,6 +119,7 @@ func waitFirstComments(page *rod.Page, feedID string) {
 	if err != nil {
 		logrus.Warnf("首屏评论未在 %s 内加载完，先返回已有内容: %v", firstCommentsTimeout, err)
 	}
+	return err
 }
 
 func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
@@ -181,12 +182,16 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		return nil, err
 	}
 
+	var commentsLoadWarning string
 	if loadAllComments {
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
 			logrus.Warnf("加载全部评论失败: %v", err)
+			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
 		}
 	} else {
-		waitFirstComments(page, feedID)
+		if err := waitFirstComments(page, feedID); err != nil {
+			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
+		}
 	}
 
 	// ctx 已取消时直接返回，避免在已取消的 page 上执行 MustEval 触发 panic
@@ -198,6 +203,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	if err != nil {
 		return nil, err
 	}
+	resp.CommentsLoadWarning = commentsLoadWarning
 
 	// 视频画面调用方读不了，字幕才是视频笔记可读的内容。
 	// 页面里只有带签名的 .srt 链接，正文得另外下一次，失败不影响详情本身。
