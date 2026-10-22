@@ -176,7 +176,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		logrus.Errorf("页面导航失败: %v", err)
 		return nil, err
 	}
-	humanize.Delay(ctx, humanize.AfterNavigate)
+	navigated := time.Now()
 
 	if err := checkPageAccessible(page); err != nil {
 		return nil, err
@@ -184,6 +184,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 
 	var commentsLoadWarning string
 	if loadAllComments {
+		humanize.Delay(ctx, humanize.AfterNavigate)
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
 			logrus.Warnf("加载全部评论失败: %v", err)
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
@@ -192,6 +193,9 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		if err := waitFirstComments(page, feedID); err != nil {
 			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
 		}
+		// 停留与等首屏评论重叠：评论通常要等约 6 秒，已超过停留时长，这里多半不用再等。
+		// 原先先停留再等评论，每次白白多出 1~2 秒。
+		humanize.DelaySince(ctx, humanize.AfterNavigate, navigated)
 	}
 
 	// ctx 已取消时直接返回，避免在已取消的 page 上执行 MustEval 触发 panic
@@ -1026,12 +1030,10 @@ func checkEndContainer(page *rod.Page) bool {
 // ========== 页面检查 ==========
 
 func checkPageAccessible(page *rod.Page) error {
-	// 等错误提示 UI 渲染出来再检查
-	time.Sleep(500 * time.Millisecond)
-
-	// 查找错误提示容器
-	wrapperEl, err := page.Timeout(2 * time.Second).Element(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
-	if err != nil {
+	// 只查一次，不等待。调用方已等到页面就绪；Element 会一直轮询到超时，
+	// 正常页面没有错误容器，原先每次都白等满 2 秒（外加 500ms 固定 sleep）。
+	found, wrapperEl, err := page.Timeout(2 * time.Second).Has(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
+	if err != nil || !found {
 		// 未找到错误容器，说明页面可访问
 		return nil
 	}
@@ -1076,13 +1078,18 @@ func checkPageAccessible(page *rod.Page) error {
 
 // ========== 数据提取 ==========
 
+// extractEvalTimeout 单次读取 noteDetailMap 的上限。正常几十毫秒就回；渲染进程卡死时
+// CDP 根本不回，不单独限时就会一直等到页面 90 秒的 deadline。3 次重试合计约 10 秒。
+const extractEvalTimeout = 3 * time.Second
+
 func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
 	var result string
 
-	// 使用retry-go来处理可能的DOM查询失败
+	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住，重试形同虚设。
+	// 线上见过首屏评论等待超时后，这一步一直卡到 90 秒 deadline 才 panic。
 	err := retry.Do(
 		func() error {
-			evalResult := page.MustEval(`() => {
+			res, err := page.Timeout(extractEvalTimeout).Eval(`() => {
 				if (window.__INITIAL_STATE__ &&
 					window.__INITIAL_STATE__.note &&
 					window.__INITIAL_STATE__.note.noteDetailMap) {
@@ -1090,10 +1097,13 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 					return JSON.stringify(noteDetailMap);
 				}
 				return "";
-			}`).String()
+			}`)
+			if err != nil {
+				return err
+			}
 
-			if evalResult != "" {
-				result = evalResult
+			if s := res.Value.Str(); s != "" {
+				result = s
 				return nil
 			}
 			return fmt.Errorf("无法获取初始状态数据")
@@ -1107,7 +1117,14 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 	)
 
 	if err != nil {
-		logrus.Errorf("提取Feed详情失败: %v", err)
+		// 留个现场：页面是否已跳走。pageInfo 走 browser，渲染进程卡死也能读到。
+		// query 里有 xsec_token，不打。
+		var pageURL, title string
+		if info, e := pageInfo(page); e == nil {
+			pageURL, _, _ = strings.Cut(info.URL, "?")
+			title = info.Title
+		}
+		logrus.Errorf("提取Feed详情失败（页面 %s，标题 %q）: %v", pageURL, title, err)
 		return nil, fmt.Errorf("提取Feed详情失败: %w", err)
 	}
 

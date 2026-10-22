@@ -91,6 +91,18 @@ func TestCommentScrollContext(t *testing.T) {
 		cancelled, cancelledPage, DefaultFeedDetailConfig()), context.Canceled)
 }
 
+func TestCheckPageAccessible(t *testing.T) {
+	page := newCommentScrollPage(t)
+	page.MustSetDocumentContent(`<div class="note-container">available note</div>`)
+	start := time.Now()
+	require.NoError(t, checkPageAccessible(page))
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"a page without an error wrapper must be checked without waiting")
+
+	page.MustSetDocumentContent(`<div class="access-wrapper">该笔记已被删除</div>`)
+	require.ErrorContains(t, checkPageAccessible(page), "该笔记已被删除")
+}
+
 func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	page := newCommentScrollPage(t)
 	page.MustSetDocumentContent(`<div class="note-scroller" style="height:500px;overflow:auto">
@@ -110,4 +122,25 @@ func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	require.Len(t, detail.Comments.List, 1)
 	require.Equal(t, "available comment", detail.Comments.List[0].Content)
 	require.True(t, detail.Comments.HasMore, "incomplete comments must not be marked as fully loaded")
+}
+
+func TestExtractFeedDetailHungRenderer(t *testing.T) {
+	page := newCommentScrollPage(t)
+	page.MustSetDocumentContent(`<script>window.__INITIAL_STATE__ = {note: {noteDetailMap: {fixture: {
+		note: {noteId: "fixture", title: "available note"}
+	}}}};</script>`)
+	// 主线程死循环：渲染进程不再回 Runtime 调用，模拟线上卡死的详情页
+	page.MustEval(`() => { setTimeout(() => { for (;;) {} }, 100) }`)
+	time.Sleep(300 * time.Millisecond)
+
+	start := time.Now()
+	var err error
+	require.NotPanics(t, func() {
+		_, err = NewFeedDetailAction(page).extractFeedDetail(page, "fixture")
+	})
+	elapsed := time.Since(start)
+	t.Logf("extract failed after %s: %v", elapsed, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 12*time.Second,
+		"a hung renderer must fail within the extract budget, not the page deadline")
 }

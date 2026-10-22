@@ -54,6 +54,20 @@ func TestDelay_RespectsContextCancel(t *testing.T) {
 	assert.Less(t, time.Since(start), 100*time.Millisecond, "已取消的 ctx 应让 Delay 立即返回")
 }
 
+func TestDelaySince(t *testing.T) {
+	ctx := context.Background()
+	maxDwell := DefaultProvider{}.Timing()[AfterNavigate].Max
+
+	start := time.Now()
+	DelaySince(ctx, AfterNavigate, start.Add(-maxDwell))
+	assert.Less(t, time.Since(start), 50*time.Millisecond, "已等够最长停留时，不应再等")
+
+	minDwell := DefaultProvider{}.Timing()[Keystroke].Min
+	start = time.Now()
+	DelaySince(ctx, Keystroke, start)
+	assert.GreaterOrEqual(t, time.Since(start), minDwell, "刚开始计时，应至少停留 Min")
+}
+
 func TestCubicBezier_Endpoints(t *testing.T) {
 	p0 := proto.Point{X: 0, Y: 0}
 	p1 := proto.Point{X: 10, Y: 50}
