@@ -176,7 +176,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		logrus.Errorf("页面导航失败: %v", err)
 		return nil, err
 	}
-	humanize.Delay(ctx, humanize.AfterNavigate)
+	navigated := time.Now()
 
 	if err := checkPageAccessible(page); err != nil {
 		return nil, err
@@ -184,6 +184,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 
 	var commentsLoadWarning string
 	if loadAllComments {
+		humanize.Delay(ctx, humanize.AfterNavigate)
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
 			logrus.Warnf("加载全部评论失败: %v", err)
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
@@ -192,6 +193,9 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		if err := waitFirstComments(page, feedID); err != nil {
 			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
 		}
+		// 停留与等首屏评论重叠：评论通常要等约 6 秒，已超过停留时长，这里多半不用再等。
+		// 原先先停留再等评论，每次白白多出 1~2 秒。
+		humanize.DelaySince(ctx, humanize.AfterNavigate, navigated)
 	}
 
 	// ctx 已取消时直接返回，避免在已取消的 page 上执行 MustEval 触发 panic
@@ -1026,12 +1030,10 @@ func checkEndContainer(page *rod.Page) bool {
 // ========== 页面检查 ==========
 
 func checkPageAccessible(page *rod.Page) error {
-	// 等错误提示 UI 渲染出来再检查
-	time.Sleep(500 * time.Millisecond)
-
-	// 查找错误提示容器
-	wrapperEl, err := page.Timeout(2 * time.Second).Element(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
-	if err != nil {
+	// 只查一次，不等待。调用方已等到页面就绪；Element 会一直轮询到超时，
+	// 正常页面没有错误容器，原先每次都白等满 2 秒（外加 500ms 固定 sleep）。
+	found, wrapperEl, err := page.Timeout(2 * time.Second).Has(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
+	if err != nil || !found {
 		// 未找到错误容器，说明页面可访问
 		return nil
 	}

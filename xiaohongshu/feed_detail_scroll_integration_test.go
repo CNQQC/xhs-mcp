@@ -91,6 +91,18 @@ func TestCommentScrollContext(t *testing.T) {
 		cancelled, cancelledPage, DefaultFeedDetailConfig()), context.Canceled)
 }
 
+func TestCheckPageAccessible(t *testing.T) {
+	page := newCommentScrollPage(t)
+	page.MustSetDocumentContent(`<div class="note-container">available note</div>`)
+	start := time.Now()
+	require.NoError(t, checkPageAccessible(page))
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"a page without an error wrapper must be checked without waiting")
+
+	page.MustSetDocumentContent(`<div class="access-wrapper">该笔记已被删除</div>`)
+	require.ErrorContains(t, checkPageAccessible(page), "该笔记已被删除")
+}
+
 func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	page := newCommentScrollPage(t)
 	page.MustSetDocumentContent(`<div class="note-scroller" style="height:500px;overflow:auto">
