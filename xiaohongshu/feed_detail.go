@@ -1078,13 +1078,18 @@ func checkPageAccessible(page *rod.Page) error {
 
 // ========== 数据提取 ==========
 
+// extractEvalTimeout 单次读取 noteDetailMap 的上限。正常几十毫秒就回；渲染进程卡死时
+// CDP 根本不回，不单独限时就会一直等到页面 90 秒的 deadline。3 次重试合计约 10 秒。
+const extractEvalTimeout = 3 * time.Second
+
 func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
 	var result string
 
-	// 使用retry-go来处理可能的DOM查询失败
+	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住，重试形同虚设。
+	// 线上见过首屏评论等待超时后，这一步一直卡到 90 秒 deadline 才 panic。
 	err := retry.Do(
 		func() error {
-			evalResult := page.MustEval(`() => {
+			res, err := page.Timeout(extractEvalTimeout).Eval(`() => {
 				if (window.__INITIAL_STATE__ &&
 					window.__INITIAL_STATE__.note &&
 					window.__INITIAL_STATE__.note.noteDetailMap) {
@@ -1092,10 +1097,13 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 					return JSON.stringify(noteDetailMap);
 				}
 				return "";
-			}`).String()
+			}`)
+			if err != nil {
+				return err
+			}
 
-			if evalResult != "" {
-				result = evalResult
+			if s := res.Value.Str(); s != "" {
+				result = s
 				return nil
 			}
 			return fmt.Errorf("无法获取初始状态数据")
@@ -1109,7 +1117,14 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 	)
 
 	if err != nil {
-		logrus.Errorf("提取Feed详情失败: %v", err)
+		// 留个现场：页面是否已跳走。pageInfo 走 browser，渲染进程卡死也能读到。
+		// query 里有 xsec_token，不打。
+		var pageURL, title string
+		if info, e := pageInfo(page); e == nil {
+			pageURL, _, _ = strings.Cut(info.URL, "?")
+			title = info.Title
+		}
+		logrus.Errorf("提取Feed详情失败（页面 %s，标题 %q）: %v", pageURL, title, err)
 		return nil, fmt.Errorf("提取Feed详情失败: %w", err)
 	}
 
