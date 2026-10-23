@@ -300,7 +300,10 @@ func (cl *commentLoader) load(ctx context.Context) error {
 			return nil
 		}
 
-		cl.performScroll(ctx)
+		// 读不到滚动位置多半是渲染进程卡死，再滚下去每一步都要等到超时，不如收手
+		if err := cl.performScroll(ctx); err != nil {
+			return fmt.Errorf("滚动评论区失败: %w", err)
+		}
 		cl.handleStagnation(ctx)
 
 		humanize.Delay(ctx, humanize.BetweenScroll)
@@ -408,7 +411,7 @@ func (cl *commentLoader) shouldStopAtTarget(currentCount int) bool {
 	return false
 }
 
-func (cl *commentLoader) performScroll(ctx context.Context) {
+func (cl *commentLoader) performScroll(ctx context.Context) error {
 	currentCount := getCommentCount(cl.page)
 	if currentCount > 0 {
 		scrollToLastComment(cl.page)
@@ -421,7 +424,10 @@ func (cl *commentLoader) performScroll(ctx context.Context) {
 		pushCount = 3 + rand.Intn(3)
 	}
 
-	_, scrollDelta, currentScrollTop := humanScroll(ctx, cl.page, cl.config.ScrollSpeed, largeMode, pushCount)
+	_, scrollDelta, currentScrollTop, err := humanScroll(ctx, cl.page, cl.config.ScrollSpeed, largeMode, pushCount)
+	if err != nil {
+		return err
+	}
 
 	if scrollDelta < minScrollDelta || currentScrollTop == cl.state.lastScrollTop {
 		cl.state.stagnantChecks++
@@ -432,6 +438,7 @@ func (cl *commentLoader) performScroll(ctx context.Context) {
 		cl.state.stagnantChecks = 0
 		cl.state.lastScrollTop = currentScrollTop
 	}
+	return nil
 }
 
 func (cl *commentLoader) handleStagnation(ctx context.Context) {
@@ -583,7 +590,11 @@ func isNearViewport(page *rod.Page, el *rod.Element) bool {
 
 	// quads 是相对视口的 CSS 像素
 	top := shape.Quads[0][1]
-	height := float64(page.MustEval(`() => window.innerHeight`).Int())
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => window.innerHeight`)
+	if err != nil {
+		return false
+	}
+	height := float64(res.Value.Int())
 
 	return top > -height && top < 2*height
 }
@@ -657,9 +668,22 @@ func clickElementWithHumanBehavior(ctx context.Context, page *rod.Page, el *rod.
 
 // ========== 滚动相关 ==========
 
-func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bool, pushCount int) (bool, int, int) {
-	beforeTop := getScrollTop(page)
-	viewportHeight := page.MustEval(`() => window.innerHeight`).Int()
+// scrollEvalTimeout 加载评论时单次读页面数值（视口高度、scrollTop 等）的上限。正常几毫秒就回；
+// 渲染进程卡死时 CDP 根本不回，不单独限时就会一直等到页面 10 分钟的 deadline，MustEval 还会 panic。
+const scrollEvalTimeout = 3 * time.Second
+
+// humanScroll 返回是否滚动、累计位移和当前 scrollTop。读不到页面数值时返回 error，
+// 其余返回值无意义。
+func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bool, pushCount int) (bool, int, int, error) {
+	beforeTop, err := getScrollTop(page)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => window.innerHeight`)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	viewportHeight := res.Value.Int()
 
 	baseRatio := getScrollRatio(speed)
 	if largeMode {
@@ -676,7 +700,9 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 
 		time.Sleep(150 * time.Millisecond) // 技术 settle：等滚动后懒加载渲染，再读 scrollTop
 
-		currentScrollTop = getScrollTop(page)
+		if currentScrollTop, err = getScrollTop(page); err != nil {
+			return false, 0, 0, err
+		}
 		deltaThisTime := currentScrollTop - beforeTop
 		actualDelta += deltaThisTime
 
@@ -697,7 +723,9 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 	if !scrolled && pushCount > 0 {
 		smartScroll(page, float64(viewportHeight)*3)
 		time.Sleep(400 * time.Millisecond) // 技术 settle：等滚动落位
-		currentScrollTop = getScrollTop(page)
+		if currentScrollTop, err = getScrollTop(page); err != nil {
+			return false, 0, 0, err
+		}
 		actualDelta += currentScrollTop - beforeTop
 		scrolled = actualDelta > 5
 	}
@@ -707,7 +735,7 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 			beforeTop-actualDelta, currentScrollTop, actualDelta, largeMode, pushCount)
 	}
 
-	return scrolled, actualDelta, currentScrollTop
+	return scrolled, actualDelta, currentScrollTop, nil
 }
 
 func getScrollRatio(speed string) float64 {
@@ -841,7 +869,7 @@ func moveToCommentScroller(page *rod.Page) {
 		})
 		return
 	}
-	size, err := page.Eval(`() => [window.innerWidth, window.innerHeight]`)
+	size, err := page.Timeout(scrollEvalTimeout).Eval(`() => [window.innerWidth, window.innerHeight]`)
 	if err != nil {
 		return
 	}
@@ -875,13 +903,13 @@ func scrollToLastComment(page *rod.Page) {
 
 // ========== DOM 查询 ==========
 
-func getScrollTop(page *rod.Page) int {
+func getScrollTop(page *rod.Page) (int, error) {
 	var result int
 
-	// 使用retry-go来处理可能的DOM查询失败
+	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住（同 extractFeedDetail）
 	err := retry.Do(
 		func() error {
-			evalResult := page.MustEval(`(sels) => {
+			res, err := page.Timeout(scrollEvalTimeout).Eval(`(sels) => {
 				// 详情页的评论是在容器内滚动的，window 的 scrollTop 恒为 0，
 				// 必须读实际滚动的那个容器；容器不可滚时才退回 window。
 				for (const sel of sels) {
@@ -892,8 +920,11 @@ func getScrollTop(page *rod.Page) int {
 				}
 				return window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
 			}`, commentScrollerSelectors)
+			if err != nil {
+				return err
+			}
 
-			result = evalResult.Int()
+			result = res.Value.Int()
 			return nil
 		},
 		retry.Attempts(3),
@@ -906,10 +937,10 @@ func getScrollTop(page *rod.Page) int {
 
 	if err != nil {
 		logrus.Warnf("获取滚动位置失败: %v", err)
-		return 0 // 失败时返回0
+		return 0, err
 	}
 
-	return result
+	return result, nil
 }
 
 func getCommentCount(page *rod.Page) int {
@@ -945,7 +976,7 @@ func getCommentCount(page *rod.Page) int {
 // getTotalCommentCount 取笔记的评论总数，读 __INITIAL_STATE__ 里的
 // interactInfo.commentCount，不依赖评论区文案。取不到返回 0。
 func getTotalCommentCount(page *rod.Page) int {
-	res, err := page.Eval(`() => {
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => {
 		const m = window.__INITIAL_STATE__?.note?.noteDetailMap;
 		if (!m) return "";
 		for (const v of Object.values(m)) {
