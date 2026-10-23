@@ -176,7 +176,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		logrus.Errorf("页面导航失败: %v", err)
 		return nil, err
 	}
-	humanize.Delay(ctx, humanize.AfterNavigate)
+	navigated := time.Now()
 
 	if err := checkPageAccessible(page); err != nil {
 		return nil, err
@@ -184,6 +184,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 
 	var commentsLoadWarning string
 	if loadAllComments {
+		humanize.Delay(ctx, humanize.AfterNavigate)
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
 			logrus.Warnf("加载全部评论失败: %v", err)
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
@@ -192,6 +193,9 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		if err := waitFirstComments(page, feedID); err != nil {
 			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
 		}
+		// 停留与等首屏评论重叠：评论通常要等约 6 秒，已超过停留时长，这里多半不用再等。
+		// 原先先停留再等评论，每次白白多出 1~2 秒。
+		humanize.DelaySince(ctx, humanize.AfterNavigate, navigated)
 	}
 
 	// ctx 已取消时直接返回，避免在已取消的 page 上执行 MustEval 触发 panic
@@ -296,7 +300,10 @@ func (cl *commentLoader) load(ctx context.Context) error {
 			return nil
 		}
 
-		cl.performScroll(ctx)
+		// 读不到滚动位置多半是渲染进程卡死，再滚下去每一步都要等到超时，不如收手
+		if err := cl.performScroll(ctx); err != nil {
+			return fmt.Errorf("滚动评论区失败: %w", err)
+		}
 		cl.handleStagnation(ctx)
 
 		humanize.Delay(ctx, humanize.BetweenScroll)
@@ -404,7 +411,7 @@ func (cl *commentLoader) shouldStopAtTarget(currentCount int) bool {
 	return false
 }
 
-func (cl *commentLoader) performScroll(ctx context.Context) {
+func (cl *commentLoader) performScroll(ctx context.Context) error {
 	currentCount := getCommentCount(cl.page)
 	if currentCount > 0 {
 		scrollToLastComment(cl.page)
@@ -417,7 +424,10 @@ func (cl *commentLoader) performScroll(ctx context.Context) {
 		pushCount = 3 + rand.Intn(3)
 	}
 
-	_, scrollDelta, currentScrollTop := humanScroll(ctx, cl.page, cl.config.ScrollSpeed, largeMode, pushCount)
+	_, scrollDelta, currentScrollTop, err := humanScroll(ctx, cl.page, cl.config.ScrollSpeed, largeMode, pushCount)
+	if err != nil {
+		return err
+	}
 
 	if scrollDelta < minScrollDelta || currentScrollTop == cl.state.lastScrollTop {
 		cl.state.stagnantChecks++
@@ -428,6 +438,7 @@ func (cl *commentLoader) performScroll(ctx context.Context) {
 		cl.state.stagnantChecks = 0
 		cl.state.lastScrollTop = currentScrollTop
 	}
+	return nil
 }
 
 func (cl *commentLoader) handleStagnation(ctx context.Context) {
@@ -579,7 +590,11 @@ func isNearViewport(page *rod.Page, el *rod.Element) bool {
 
 	// quads 是相对视口的 CSS 像素
 	top := shape.Quads[0][1]
-	height := float64(page.MustEval(`() => window.innerHeight`).Int())
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => window.innerHeight`)
+	if err != nil {
+		return false
+	}
+	height := float64(res.Value.Int())
 
 	return top > -height && top < 2*height
 }
@@ -653,9 +668,22 @@ func clickElementWithHumanBehavior(ctx context.Context, page *rod.Page, el *rod.
 
 // ========== 滚动相关 ==========
 
-func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bool, pushCount int) (bool, int, int) {
-	beforeTop := getScrollTop(page)
-	viewportHeight := page.MustEval(`() => window.innerHeight`).Int()
+// scrollEvalTimeout 加载评论时单次读页面数值（视口高度、scrollTop 等）的上限。正常几毫秒就回；
+// 渲染进程卡死时 CDP 根本不回，不单独限时就会一直等到页面 10 分钟的 deadline，MustEval 还会 panic。
+const scrollEvalTimeout = 3 * time.Second
+
+// humanScroll 返回是否滚动、累计位移和当前 scrollTop。读不到页面数值时返回 error，
+// 其余返回值无意义。
+func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bool, pushCount int) (bool, int, int, error) {
+	beforeTop, err := getScrollTop(page)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => window.innerHeight`)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	viewportHeight := res.Value.Int()
 
 	baseRatio := getScrollRatio(speed)
 	if largeMode {
@@ -672,7 +700,9 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 
 		time.Sleep(150 * time.Millisecond) // 技术 settle：等滚动后懒加载渲染，再读 scrollTop
 
-		currentScrollTop = getScrollTop(page)
+		if currentScrollTop, err = getScrollTop(page); err != nil {
+			return false, 0, 0, err
+		}
 		deltaThisTime := currentScrollTop - beforeTop
 		actualDelta += deltaThisTime
 
@@ -693,7 +723,9 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 	if !scrolled && pushCount > 0 {
 		smartScroll(page, float64(viewportHeight)*3)
 		time.Sleep(400 * time.Millisecond) // 技术 settle：等滚动落位
-		currentScrollTop = getScrollTop(page)
+		if currentScrollTop, err = getScrollTop(page); err != nil {
+			return false, 0, 0, err
+		}
 		actualDelta += currentScrollTop - beforeTop
 		scrolled = actualDelta > 5
 	}
@@ -703,7 +735,7 @@ func humanScroll(ctx context.Context, page *rod.Page, speed string, largeMode bo
 			beforeTop-actualDelta, currentScrollTop, actualDelta, largeMode, pushCount)
 	}
 
-	return scrolled, actualDelta, currentScrollTop
+	return scrolled, actualDelta, currentScrollTop, nil
 }
 
 func getScrollRatio(speed string) float64 {
@@ -837,7 +869,7 @@ func moveToCommentScroller(page *rod.Page) {
 		})
 		return
 	}
-	size, err := page.Eval(`() => [window.innerWidth, window.innerHeight]`)
+	size, err := page.Timeout(scrollEvalTimeout).Eval(`() => [window.innerWidth, window.innerHeight]`)
 	if err != nil {
 		return
 	}
@@ -871,13 +903,13 @@ func scrollToLastComment(page *rod.Page) {
 
 // ========== DOM 查询 ==========
 
-func getScrollTop(page *rod.Page) int {
+func getScrollTop(page *rod.Page) (int, error) {
 	var result int
 
-	// 使用retry-go来处理可能的DOM查询失败
+	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住（同 extractFeedDetail）
 	err := retry.Do(
 		func() error {
-			evalResult := page.MustEval(`(sels) => {
+			res, err := page.Timeout(scrollEvalTimeout).Eval(`(sels) => {
 				// 详情页的评论是在容器内滚动的，window 的 scrollTop 恒为 0，
 				// 必须读实际滚动的那个容器；容器不可滚时才退回 window。
 				for (const sel of sels) {
@@ -888,8 +920,11 @@ func getScrollTop(page *rod.Page) int {
 				}
 				return window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
 			}`, commentScrollerSelectors)
+			if err != nil {
+				return err
+			}
 
-			result = evalResult.Int()
+			result = res.Value.Int()
 			return nil
 		},
 		retry.Attempts(3),
@@ -902,10 +937,10 @@ func getScrollTop(page *rod.Page) int {
 
 	if err != nil {
 		logrus.Warnf("获取滚动位置失败: %v", err)
-		return 0 // 失败时返回0
+		return 0, err
 	}
 
-	return result
+	return result, nil
 }
 
 func getCommentCount(page *rod.Page) int {
@@ -941,7 +976,7 @@ func getCommentCount(page *rod.Page) int {
 // getTotalCommentCount 取笔记的评论总数，读 __INITIAL_STATE__ 里的
 // interactInfo.commentCount，不依赖评论区文案。取不到返回 0。
 func getTotalCommentCount(page *rod.Page) int {
-	res, err := page.Eval(`() => {
+	res, err := page.Timeout(scrollEvalTimeout).Eval(`() => {
 		const m = window.__INITIAL_STATE__?.note?.noteDetailMap;
 		if (!m) return "";
 		for (const v of Object.values(m)) {
@@ -1026,12 +1061,10 @@ func checkEndContainer(page *rod.Page) bool {
 // ========== 页面检查 ==========
 
 func checkPageAccessible(page *rod.Page) error {
-	// 等错误提示 UI 渲染出来再检查
-	time.Sleep(500 * time.Millisecond)
-
-	// 查找错误提示容器
-	wrapperEl, err := page.Timeout(2 * time.Second).Element(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
-	if err != nil {
+	// 只查一次，不等待。调用方已等到页面就绪；Element 会一直轮询到超时，
+	// 正常页面没有错误容器，原先每次都白等满 2 秒（外加 500ms 固定 sleep）。
+	found, wrapperEl, err := page.Timeout(2 * time.Second).Has(".access-wrapper, .error-wrapper, .not-found-wrapper, .blocked-wrapper")
+	if err != nil || !found {
 		// 未找到错误容器，说明页面可访问
 		return nil
 	}
@@ -1076,13 +1109,18 @@ func checkPageAccessible(page *rod.Page) error {
 
 // ========== 数据提取 ==========
 
+// extractEvalTimeout 单次读取 noteDetailMap 的上限。正常几十毫秒就回；渲染进程卡死时
+// CDP 根本不回，不单独限时就会一直等到页面 90 秒的 deadline。3 次重试合计约 10 秒。
+const extractEvalTimeout = 3 * time.Second
+
 func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
 	var result string
 
-	// 使用retry-go来处理可能的DOM查询失败
+	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住，重试形同虚设。
+	// 线上见过首屏评论等待超时后，这一步一直卡到 90 秒 deadline 才 panic。
 	err := retry.Do(
 		func() error {
-			evalResult := page.MustEval(`() => {
+			res, err := page.Timeout(extractEvalTimeout).Eval(`() => {
 				if (window.__INITIAL_STATE__ &&
 					window.__INITIAL_STATE__.note &&
 					window.__INITIAL_STATE__.note.noteDetailMap) {
@@ -1090,10 +1128,13 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 					return JSON.stringify(noteDetailMap);
 				}
 				return "";
-			}`).String()
+			}`)
+			if err != nil {
+				return err
+			}
 
-			if evalResult != "" {
-				result = evalResult
+			if s := res.Value.Str(); s != "" {
+				result = s
 				return nil
 			}
 			return fmt.Errorf("无法获取初始状态数据")
@@ -1107,7 +1148,14 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 	)
 
 	if err != nil {
-		logrus.Errorf("提取Feed详情失败: %v", err)
+		// 留个现场：页面是否已跳走。pageInfo 走 browser，渲染进程卡死也能读到。
+		// query 里有 xsec_token，不打。
+		var pageURL, title string
+		if info, e := pageInfo(page); e == nil {
+			pageURL, _, _ = strings.Cut(info.URL, "?")
+			title = info.Title
+		}
+		logrus.Errorf("提取Feed详情失败（页面 %s，标题 %q）: %v", pageURL, title, err)
 		return nil, fmt.Errorf("提取Feed详情失败: %w", err)
 	}
 

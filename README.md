@@ -154,6 +154,13 @@ net/http 一请求一 goroutine——**两个请求撞上就是两套完整 Chro
 MCP `get_feed_detail` 的笔记、`commentList` 中的评论及各层 `replies` 均通过 `time`
 返回发布时间，格式为 `YYYY-MM-DD HH:mm`（北京时间，UTC+8）；日期缺失时省略该字段。
 
+### 7. 详情页去掉两段白等
+
+- `checkPageAccessible` 原先 sleep 500ms 后用 `Element` 找错误容器。`Element` 会一直轮询到
+  2 秒超时，正常页面没有错误容器，**每次成功的调用都白等 2.5 秒**。改为 `Has` 只查一次。
+- 导航后的拟人停留（中位约 1.5 秒）原先排在等首屏评论（约 6 秒）之前，两者叠加。改为
+  `humanize.DelaySince`：停留从页面就绪起算，与等评论重叠，只补不足的部分。
+
 ### 效果汇总
 
 同一条视频笔记、同一个关键词，补丁全部部署后的对照：
