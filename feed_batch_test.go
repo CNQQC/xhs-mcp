@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
@@ -118,8 +120,8 @@ func TestNoteBatchItemJSON(t *testing.T) {
 	assert.JSONEq(t, `{"ref":"r2","error":"笔记不存在"}`, string(failed))
 }
 
-func TestFeedDetailsToolRegistered(t *testing.T) {
-	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+func TestToolStringListSchemas(t *testing.T) {
+	router := setupRoutes(NewAppServer(nil, ""))
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -131,17 +133,41 @@ func TestFeedDetailsToolRegistered(t *testing.T) {
 		Result struct {
 			Tools []struct {
 				Name        string
-				InputSchema struct{ Properties map[string]json.RawMessage }
+				InputSchema *jsonschema.Schema
 			}
 		}
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	schemas := make(map[string]*jsonschema.Schema, len(result.Result.Tools))
 	for _, tool := range result.Result.Tools {
-		if tool.Name == "get_feed_details" {
-			assert.Contains(t, tool.InputSchema.Properties, "refs")
-			assert.Contains(t, tool.InputSchema.Properties, "include_images")
-			return
+		schemas[tool.Name] = tool.InputSchema
+	}
+
+	require.NotNil(t, schemas["get_feed_details"])
+	assert.Contains(t, schemas["get_feed_details"].Properties, "include_images")
+	wantFields := map[string]map[string]bool{
+		"get_feed_details":   {"refs": true},
+		"publish_content":    {"images": true, "tags": false, "products": false},
+		"publish_with_video": {"tags": false, "products": false},
+	}
+	for toolName, fields := range wantFields {
+		require.NotNil(t, schemas[toolName], toolName)
+		for fieldName, required := range fields {
+			t.Run(toolName+"/"+fieldName, func(t *testing.T) {
+				input := schemas[toolName]
+				field := input.Properties[fieldName]
+				require.NotNil(t, field)
+				assert.Equal(t, required, slices.Contains(input.Required, fieldName))
+				assert.NotEmpty(t, field.Description)
+				assert.Empty(t, field.Type)
+				assert.Empty(t, field.Types)
+				assert.Nil(t, field.Items)
+				require.Len(t, field.AnyOf, 2)
+				assert.Equal(t, "array", field.AnyOf[0].Type)
+				require.NotNil(t, field.AnyOf[0].Items)
+				assert.Equal(t, "string", field.AnyOf[0].Items.Type)
+				assert.Equal(t, "null", field.AnyOf[1].Type)
+			})
 		}
 	}
-	t.Fatal("get_feed_details 未注册")
 }

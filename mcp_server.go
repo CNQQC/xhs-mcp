@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"runtime/debug"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 )
@@ -129,6 +131,23 @@ type LikeNotificationArgs struct {
 type ReplyNotificationArgs struct {
 	CommentID string `json:"comment_id" jsonschema:"目标评论ID，从 list_notifications 的 comment_id 字段获取"`
 	Content   string `json:"content" jsonschema:"回复内容"`
+}
+
+func nullableStringArrayToolSchema[Args any]() *jsonschema.Schema {
+	schema, err := jsonschema.For[Args](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[[]string](): {
+				AnyOf: []*jsonschema.Schema{
+					{Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+					{Type: "null"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		panic(fmt.Errorf("build MCP input schema: %w", err))
+	}
+	return schema
 }
 
 // InitMCPServer 初始化 MCP Server
@@ -260,6 +279,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		&mcp.Tool{
 			Name:        "publish_content",
 			Description: "发布小红书图文内容",
+			InputSchema: nullableStringArrayToolSchema[PublishContentArgs](),
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Content",
 				DestructiveHint: boolPtr(true),
@@ -370,6 +390,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		&mcp.Tool{
 			Name:        "get_feed_details",
 			Description: "批量获取多条小红书笔记详情，一次最多6条，并发抓取、一次返回，比逐条调用 get_feed_detail 更快。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、首屏已加载的评论），返回的 notes 与 refs 一一对应（顺序相同、ref 原样带回）；单条失败时保留 ref、原始 error 文本及结构化 error_info（code、retryable、next_action、request_id），不影响其余。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
+			InputSchema: nullableStringArrayToolSchema[FeedDetailsArgs](),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Details (Batch)",
 				ReadOnlyHint: true,
@@ -491,6 +512,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		&mcp.Tool{
 			Name:        "publish_with_video",
 			Description: "发布小红书视频内容（仅支持本地单个视频文件）",
+			InputSchema: nullableStringArrayToolSchema[PublishVideoArgs](),
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Video",
 				DestructiveHint: boolPtr(true),
