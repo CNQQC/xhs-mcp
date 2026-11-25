@@ -135,10 +135,13 @@ func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken 
 }
 
 func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
+	return f.getFeedDetailFromURL(ctx, feedID, makeFeedDetailURL(feedID, xsecToken), loadAllComments, config)
+}
+
+func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url string, loadAllComments bool, config FeedDetailConfig) (*FeedDetailResponse, error) {
 	config = config.normalize()
 
 	page := f.page.Context(ctx).Timeout(FeedDetailTimeout(loadAllComments))
-	url := makeFeedDetailURL(feedID, xsecToken)
 
 	// 详情数据全部取自 __INITIAL_STATE__，图片和视频只是渲染出来给人看的，
 	// 对调用方无用却很吃内存；视频一播 DOM 还会永远静不下来。拦掉两头都赚。
@@ -190,6 +193,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	}
 
 	var commentsLoadWarning string
+	firstPageReady := !loadAllComments && initial != nil && initial.Comments.FirstRequestFinish != nil && *initial.Comments.FirstRequestFinish
 	if loadAllComments {
 		humanize.Delay(ctx, humanize.AfterNavigate)
 		if err := f.loadAllCommentsWithConfig(ctx, page, config); err != nil {
@@ -197,8 +201,10 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
 		}
 	} else {
-		if err := waitFirstComments(page, feedID, config.FirstCommentsTimeout); err != nil {
-			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
+		if !firstPageReady {
+			if err := waitFirstComments(page, feedID, config.FirstCommentsTimeout); err != nil {
+				commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
+			}
 		}
 		// 停留与等首屏评论重叠：评论通常要等约 6 秒，已超过停留时长，这里多半不用再等。
 		// 原先先停留再等评论，每次白白多出 1~2 秒。
@@ -211,7 +217,9 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	}
 
 	var resp *FeedDetailResponse
-	if !loadAllComments && initial != nil {
+	if firstPageReady {
+		resp = initial
+	} else if !loadAllComments && initial != nil {
 		// 渲染进程可能在等待评论时停止响应。保留已经取得的正文，只做一次限时刷新。
 		refreshTimeout := extractEvalTimeout
 		if commentsLoadWarning != "" {

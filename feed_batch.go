@@ -187,14 +187,22 @@ func (s *AppServer) handleGetFeedDetailsWithFetch(ctx context.Context, args Feed
 			if r.err == nil && r.detail == nil {
 				r.err = fmt.Errorf("内部错误: 批量详情返回空结果")
 			}
-			for _, i := range positions[j] {
-				if r.err != nil {
+			if r.err != nil {
+				for _, i := range positions[j] {
 					setFailure(i, target, r.err, r.err.Error())
-					continue
 				}
-				view := toNoteDetailViewWithRef(s.refs, target.FeedID, target.XsecToken, r.detail, args.Refs[i])
-				applyDetailRequestCoverage(&view, false, config)
-				notes[i] = noteBatchItem{noteDetailView: view}
+				continue
+			}
+			firstRef := args.Refs[positions[j][0]]
+			view := toNoteDetailViewWithRef(s.refs, target.FeedID, target.XsecToken, r.detail, firstRef)
+			applyDetailRequestCoverage(&view, false, config)
+			for _, i := range positions[j] {
+				item := view
+				if args.Refs[i] != firstRef {
+					item.Ref = args.Refs[i]
+					item.RefExpiresAt = s.refs.expiresAt(item.Ref)
+				}
+				notes[i] = noteBatchItem{noteDetailView: item}
 			}
 		}
 	}

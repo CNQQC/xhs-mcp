@@ -1,10 +1,11 @@
 package main
 
 import (
+	"container/list"
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +45,7 @@ type refTarget struct {
 
 type refEntry struct {
 	target    refTarget
-	seq       uint64
+	position  *list.Element
 	expiresAt time.Time
 }
 
@@ -54,6 +55,7 @@ type refTable struct {
 	tag   string // 每进程随机前缀
 	seq   uint64
 	items map[string]refEntry
+	order list.List
 }
 
 func newRefTable() *refTable {
@@ -87,16 +89,20 @@ func (t *refTable) putWithMetadata(target refTarget) (string, time.Time, time.Ti
 	defer t.mu.Unlock()
 
 	t.seq++
-	ref := fmt.Sprintf("%s%d", t.tag, t.seq)
-	now := time.Now().UTC()
+	ref := t.tag + strconv.FormatUint(t.seq, 10)
+	now := time.Now()
 	expiresAt := now.Add(refTTL)
-	t.items[ref] = refEntry{target: target, seq: t.seq, expiresAt: expiresAt}
-
-	if len(t.items) > refMaxEntries {
-		t.evictLocked()
+	for oldest := t.order.Front(); oldest != nil; oldest = t.order.Front() {
+		key := oldest.Value.(string)
+		if len(t.items) < refMaxEntries && now.Before(t.items[key].expiresAt) {
+			break
+		}
+		t.order.Remove(oldest)
+		delete(t.items, key)
 	}
+	t.items[ref] = refEntry{target: target, position: t.order.PushBack(ref), expiresAt: expiresAt}
 
-	return ref, now, expiresAt
+	return ref, now.UTC(), expiresAt.UTC()
 }
 
 // expiresAt 返回当前 ref 的实际有效期，不续期。
@@ -121,42 +127,12 @@ func (t *refTable) lookup(ref string) (refTarget, bool) {
 		return refTarget{}, false
 	}
 	if !time.Now().Before(item.expiresAt) {
+		t.order.Remove(item.position)
 		delete(t.items, ref)
 		return refTarget{}, false
 	}
 
 	return item.target, true
-}
-
-// evictLocked 先清过期的，还超容量就按登记顺序丢最老的。
-//
-// 丢最老的而不是随机丢：模型引用的总是刚拿到的那一批，最老的那些本来也快没人问了。
-func (t *refTable) evictLocked() {
-	now := time.Now()
-	for ref, item := range t.items {
-		if !now.Before(item.expiresAt) {
-			delete(t.items, ref)
-		}
-	}
-
-	over := len(t.items) - refMaxEntries
-	if over <= 0 {
-		return
-	}
-
-	type aged struct {
-		ref string
-		seq uint64
-	}
-	all := make([]aged, 0, len(t.items))
-	for ref, item := range t.items {
-		all = append(all, aged{ref, item.seq})
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].seq < all[j].seq })
-
-	for i := 0; i < over; i++ {
-		delete(t.items, all[i].ref)
-	}
 }
 
 // errRefExpired ref 查不到时对模型说的话。
