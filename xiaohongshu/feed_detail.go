@@ -13,6 +13,7 @@ import (
 	"github.com/avast/retry-go/v4"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/rod/lib/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
@@ -147,7 +148,8 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	logrus.Infof("配置: 点击更多=%v, 回复阈值=%d, 最大评论数=%d, 滚动速度=%s",
 		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
 
-	// 使用retry-go处理页面导航和DOM稳定等待
+	var initial *FeedDetailResponse
+	// 页面导航可重试，首屏就绪时立即保存正文。
 	err := retry.Do(
 		func() error {
 			// 用 Navigate 而不是 MustNavigate：后者失败是 panic，外面这层 retry.Do
@@ -163,12 +165,10 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 			// 15 秒上限止住了血，但没追问这个等待本身该不该存在——实测那 15 秒每次都白等满
 			// （日志里必现 "DOM 未在 15s 内稳定"），而详情数据全部取自 __INITIAL_STATE__，
 			// 跟 DOM 静不静止毫无关系。改成直接等 noteDetailMap 落地，图文和视频都不再空耗。
-			if e := page.Timeout(15 * time.Second).Wait(rod.Eval(`() => {
-				const s = window.__INITIAL_STATE__;
-				const m = s && s.note && s.note.noteDetailMap;
-				return !!m && Object.keys(m).length > 0;
-			}`)); e != nil {
-				logrus.Warnf("__INITIAL_STATE__ 未在 15s 内就绪，仍尝试解析: %v", e)
+			var readyErr error
+			initial, readyErr = waitInitialDetail(page, feedID)
+			if readyErr != nil {
+				logrus.Warnf("未取得首屏正文，稍后再次尝试: %v", readyErr)
 			}
 			return nil
 		},
@@ -210,9 +210,19 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 		return nil, err
 	}
 
-	resp, err := f.extractFeedDetail(page, feedID)
-	if err != nil {
-		return nil, err
+	var resp *FeedDetailResponse
+	if !loadAllComments && initial != nil {
+		// 渲染进程可能在等待评论时停止响应。保留已经取得的正文，只做一次限时刷新。
+		resp, err = readFeedDetail(page.Timeout(extractEvalTimeout), feedID)
+		if err != nil {
+			resp = initial
+			commentsLoadWarning = "评论刷新未完成，已返回首次读取的正文和评论"
+		}
+	} else {
+		resp, err = f.extractFeedDetail(page, feedID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	resp.CommentsLoadWarning = commentsLoadWarning
 
@@ -1120,39 +1130,52 @@ func checkPageAccessible(page *rod.Page) error {
 // CDP 根本不回，不单独限时就会一直等到页面 90 秒的 deadline。3 次重试合计约 10 秒。
 const extractEvalTimeout = 3 * time.Second
 
+// waitInitialDetail 在目标笔记可读时直接取回快照，避免把正文的成功依赖于稍后的评论请求。
+func waitInitialDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
+	ctx, cancel := context.WithTimeout(page.GetContext(), 15*time.Second)
+	defer cancel()
+	var detail *FeedDetailResponse
+	err := utils.Retry(ctx, rod.DefaultSleeper(), func() (bool, error) {
+		var err error
+		detail, err = readFeedDetail(page.Context(ctx), feedID)
+		if err == errors.ErrNoFeedDetail {
+			return false, nil
+		}
+		return true, err
+	})
+	return detail, err
+}
+
+func readFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
+	res, err := page.Eval(`(id) => {
+		const entry = window.__INITIAL_STATE__?.note?.noteDetailMap?.[id];
+		if (!entry?.note) return "";
+		if (entry.note.noteId && entry.note.noteId !== id) return "";
+		if (!entry.note.noteId && !entry.note.title && !entry.note.desc && !entry.note.type) return "";
+		return JSON.stringify({note: entry.note, comments: entry.comments});
+	}`, feedID)
+	if err != nil {
+		return nil, err
+	}
+	if res.Value.Str() == "" {
+		return nil, errors.ErrNoFeedDetail
+	}
+	var detail FeedDetailResponse
+	if err := json.Unmarshal([]byte(res.Value.Str()), &detail); err != nil {
+		return nil, fmt.Errorf("读取笔记详情: %w", err)
+	}
+	detail.Note.TimeText = timestampText(detail.Note.Time)
+	fillCommentTimeText(detail.Comments.List)
+	return &detail, nil
+}
+
 func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
-	var result string
-
-	// 用 Eval 而不是 MustEval：后者超时是 panic，retry.Do 接不住，重试形同虚设。
-	// 线上见过首屏评论等待超时后，这一步一直卡到 90 秒 deadline 才 panic。
-	err := retry.Do(
-		func() error {
-			res, err := page.Timeout(extractEvalTimeout).Eval(`() => {
-				if (window.__INITIAL_STATE__ &&
-					window.__INITIAL_STATE__.note &&
-					window.__INITIAL_STATE__.note.noteDetailMap) {
-					const noteDetailMap = window.__INITIAL_STATE__.note.noteDetailMap;
-					return JSON.stringify(noteDetailMap);
-				}
-				return "";
-			}`)
-			if err != nil {
-				return err
-			}
-
-			if s := res.Value.Str(); s != "" {
-				result = s
-				return nil
-			}
-			return fmt.Errorf("无法获取初始状态数据")
-		},
-		retry.Attempts(3),
-		retry.Delay(200*time.Millisecond),
-		retry.MaxJitter(300*time.Millisecond),
-		retry.OnRetry(func(n uint, err error) {
-			logrus.Debugf("提取Feed详情重试 #%d: %v", n, err)
-		}),
-	)
+	var detail *FeedDetailResponse
+	err := retry.Do(func() error {
+		var err error
+		detail, err = readFeedDetail(page.Timeout(extractEvalTimeout), feedID)
+		return err
+	}, retry.Context(page.GetContext()), retry.Attempts(3), retry.Delay(200*time.Millisecond), retry.MaxJitter(300*time.Millisecond))
 
 	if err != nil {
 		// 留个现场：页面是否已跳走。pageInfo 走 browser，渲染进程卡死也能读到。
@@ -1165,33 +1188,6 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 		logrus.Errorf("提取Feed详情失败（页面 %s，标题 %q）: %v", pageURL, title, err)
 		return nil, fmt.Errorf("提取Feed详情失败: %w", err)
 	}
-
-	if result == "" {
-		return nil, errors.ErrNoFeedDetail
-	}
-
-	var noteDetailMap map[string]struct {
-		Note     FeedDetail  `json:"note"`
-		Comments CommentList `json:"comments"`
-	}
-
-	if err := json.Unmarshal([]byte(result), &noteDetailMap); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal noteDetailMap: %w", err)
-	}
-
-	noteDetail, exists := noteDetailMap[feedID]
-	if !exists {
-		return nil, fmt.Errorf("feed %s not found in noteDetailMap", feedID)
-	}
-
-	detail := &FeedDetailResponse{
-		Note:     noteDetail.Note,
-		Comments: noteDetail.Comments,
-	}
-
-	// 站点只给裸时间戳，可读形式在这里补上，见 timefmt.go
-	detail.Note.TimeText = timestampText(detail.Note.Time)
-	fillCommentTimeText(detail.Comments.List)
 
 	return detail, nil
 }
