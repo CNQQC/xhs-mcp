@@ -47,6 +47,10 @@ func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTa
 	defer b.Close()
 	// 名额占用上限：最坏每轮都卡满单页超时，另留 1 分钟收尾
 	rounds := (len(targets) + feedBatchConcurrency - 1) / feedBatchConcurrency
+	// 多轮共用一次首屏评论等待预算，给导航、提取正文和返回结果留出时间。
+	if rounds > 1 {
+		config.FirstCommentsTimeout = xiaohongshu.DefaultFeedDetailConfig().FirstCommentsTimeout / time.Duration(rounds)
+	}
 	b.limitHold(time.Duration(rounds)*xiaohongshu.FeedDetailTimeout(false) + time.Minute)
 
 	return fetchConcurrently(ctx, len(targets), feedBatchConcurrency,

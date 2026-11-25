@@ -45,6 +45,9 @@ type FeedDetailConfig struct {
 	// IncludeImages 是否连每张图的尺寸与地址一起返回。默认 false，只报张数。
 	// 零值即默认行为，所以 normalize 不必管它。
 	IncludeImages bool
+
+	// 批量请求按并发轮数分配此等待时间，只影响首屏评论的等待。
+	FirstCommentsTimeout time.Duration `json:"-"`
 }
 
 // 未显式指定时的默认值。
@@ -56,10 +59,11 @@ const (
 
 func DefaultFeedDetailConfig() FeedDetailConfig {
 	return FeedDetailConfig{
-		ClickMoreReplies:    false,
-		MaxRepliesThreshold: defaultMaxRepliesThreshold,
-		MaxCommentItems:     defaultMaxCommentItems,
-		ScrollSpeed:         defaultScrollSpeed,
+		ClickMoreReplies:     false,
+		MaxRepliesThreshold:  defaultMaxRepliesThreshold,
+		MaxCommentItems:      defaultMaxCommentItems,
+		ScrollSpeed:          defaultScrollSpeed,
+		FirstCommentsTimeout: firstCommentsTimeout,
 	}
 }
 
@@ -73,6 +77,9 @@ func DefaultFeedDetailConfig() FeedDetailConfig {
 //
 // 真要拉更多评论，显式传一个大的 MaxCommentItems。
 func (c FeedDetailConfig) normalize() FeedDetailConfig {
+	if c.FirstCommentsTimeout <= 0 {
+		c.FirstCommentsTimeout = firstCommentsTimeout
+	}
 	if c.MaxCommentItems <= 0 {
 		c.MaxCommentItems = defaultMaxCommentItems
 	}
@@ -110,14 +117,14 @@ const firstCommentsTimeout = 15 * time.Second
 // waitFirstComments 等首屏评论请求完成（comments.firstRequestFinish，无评论的笔记同样会置 true）。
 // 评论是详情数据落地后前端另发请求取的：单页约 6 秒，同一浏览器多页并发时要十几秒。
 // 不等就提取，评论列表是空的。等不到时记录日志与完整性告警，正文照常返回。
-func waitFirstComments(page *rod.Page, feedID string) error {
-	err := page.Timeout(firstCommentsTimeout).Wait(rod.Eval(`(id) => {
+func waitFirstComments(page *rod.Page, feedID string, timeout time.Duration) error {
+	err := page.Timeout(timeout).Wait(rod.Eval(`(id) => {
 		const m = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.note && window.__INITIAL_STATE__.note.noteDetailMap;
 		const c = m && m[id] && m[id].comments;
 		return !!c && c.firstRequestFinish === true;
 	}`, feedID))
 	if err != nil {
-		logrus.Warnf("首屏评论未在 %s 内加载完，先返回已有内容: %v", firstCommentsTimeout, err)
+		logrus.Warnf("首屏评论未在 %s 内加载完，先返回已有内容: %v", timeout, err)
 	}
 	return err
 }
@@ -190,7 +197,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
 		}
 	} else {
-		if err := waitFirstComments(page, feedID); err != nil {
+		if err := waitFirstComments(page, feedID, config.FirstCommentsTimeout); err != nil {
 			commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
 		}
 		// 停留与等首屏评论重叠：评论通常要等约 6 秒，已超过停留时长，这里多半不用再等。
