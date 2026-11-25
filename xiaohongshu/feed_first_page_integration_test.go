@@ -5,9 +5,14 @@ package xiaohongshu
 import (
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,4 +54,56 @@ func TestFirstPageSnapshotReads(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSkipCommentsDoesNotReadCommentState(t *testing.T) {
+	page := newCommentScrollPage(t)
+	html := `<script>
+	window.commentReads=0;
+	window.__INITIAL_STATE__={note:{noteDetailMap:{fixture:{
+	 note:{noteId:"fixture",title:"body",interactInfo:{commentCount:"7"}},
+	 get comments(){ window.commentReads++; throw Error("unavailable"); }
+	}}}};
+	</script>`
+	config := DefaultFeedDetailConfig()
+	config.SkipComments = true
+	url := "data:text/html;base64," + base64.StdEncoding.EncodeToString([]byte(html))
+	detail, err := NewFeedDetailAction(page).getFeedDetailFromURL(page.GetContext(), "fixture", url, false, config)
+	require.NoError(t, err)
+	require.Equal(t, 0, page.MustEval(`() => window.commentReads`).Int())
+	require.Equal(t, "7", detail.Note.InteractInfo.CommentCount)
+	require.Empty(t, detail.Comments.List)
+	require.Empty(t, detail.CommentsLoadWarning)
+}
+
+func TestSelectiveResourceBlocking(t *testing.T) {
+	var imageRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/":
+			writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(writer, `<img src="/photo" onerror="window.imageFailed=true"><script src="/script"></script>`)
+		case "/photo":
+			imageRequests.Add(1)
+		case "/script":
+			writer.Header().Set("Content-Type", "application/javascript")
+			fmt.Fprint(writer, `fetch("/comments").then(r=>r.text()).then(value=>window.comments=value)`)
+		case "/comments":
+			fmt.Fprint(writer, "ready")
+		}
+	}))
+	defer server.Close()
+	page := newCommentScrollPage(t)
+	stop := blockHeavyResources(page)
+	defer stop()
+	var state proto.FetchEnable
+	require.True(t, page.LoadState(&state))
+	var types []proto.NetworkResourceType
+	for _, pattern := range state.Patterns {
+		types = append(types, pattern.ResourceType)
+	}
+	require.ElementsMatch(t, []proto.NetworkResourceType{proto.NetworkResourceTypeImage, proto.NetworkResourceTypeMedia, proto.NetworkResourceTypeFont}, types)
+	require.NoError(t, page.Navigate(server.URL))
+	require.NoError(t, page.Wait(rod.Eval(`() => window.imageFailed && window.comments === 'ready'`)))
+	require.Zero(t, imageRequests.Load())
 }

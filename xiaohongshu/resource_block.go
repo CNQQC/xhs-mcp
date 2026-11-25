@@ -1,6 +1,8 @@
 package xiaohongshu
 
 import (
+	"slices"
+
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/sirupsen/logrus"
@@ -20,17 +22,20 @@ import (
 func blockHeavyResources(page *rod.Page) func() {
 	router := page.HijackRequests()
 
-	router.MustAdd("*", func(ctx *rod.Hijack) {
-		switch ctx.Request.Type() {
-		case proto.NetworkResourceTypeImage,
-			proto.NetworkResourceTypeMedia,
-			proto.NetworkResourceTypeFont:
-			// BlockedByClient 是浏览器插件拦广告时的常规做法，站点普遍容忍。
+	heavy := []proto.NetworkResourceType{proto.NetworkResourceTypeImage, proto.NetworkResourceTypeMedia, proto.NetworkResourceTypeFont}
+	block := func(ctx *rod.Hijack) {
+		if slices.Contains(heavy, ctx.Request.Type()) {
 			ctx.Response.Fail(proto.NetworkErrorReasonBlockedByClient)
-		default:
+		} else {
 			ctx.ContinueRequest(&proto.FetchContinueRequest{})
 		}
-	})
+	}
+	for _, kind := range heavy {
+		if err := router.Add("*", kind, block); err != nil {
+			_ = router.Stop()
+			panic(err)
+		}
+	}
 
 	go router.Run()
 

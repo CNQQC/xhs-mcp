@@ -4,6 +4,7 @@ package xiaohongshu
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -16,8 +17,12 @@ import (
 // These fixtures run in Chromium without contacting Xiaohongshu or loading cookies.
 func newCommentScrollPage(t *testing.T) *rod.Page {
 	t.Helper()
-	bin, err := browser.EnsureBrowser()
-	require.NoError(t, err)
+	bin := os.Getenv("XHS_FIXTURE_CHROME")
+	if bin == "" {
+		var err error
+		bin, err = browser.EnsureBrowser()
+		require.NoError(t, err)
+	}
 	l := launcher.New().Bin(bin).Headless(true)
 	b := rod.New().ControlURL(l.MustLaunch()).MustConnect()
 	t.Cleanup(func() {
@@ -116,7 +121,7 @@ func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	require.NotPanics(t, func() {
 		require.NoError(t, action.loadAllCommentsWithConfig(page.GetContext(), page, DefaultFeedDetailConfig()))
 	})
-	detail, err := action.extractFeedDetail(page, "fixture")
+	detail, err := action.extractFeedDetail(page, "fixture", true)
 	require.NoError(t, err)
 	require.Equal(t, "available body", detail.Note.Desc)
 	require.Len(t, detail.Comments.List, 1)
@@ -146,7 +151,7 @@ func TestExtractFeedDetailHungRenderer(t *testing.T) {
 	start := time.Now()
 	var err error
 	require.NotPanics(t, func() {
-		_, err = NewFeedDetailAction(page).extractFeedDetail(page, "fixture")
+		_, err = NewFeedDetailAction(page).extractFeedDetail(page, "fixture", true)
 	})
 	elapsed := time.Since(start)
 	t.Logf("extract failed after %s: %v", elapsed, err)

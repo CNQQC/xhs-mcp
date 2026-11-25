@@ -351,6 +351,10 @@ func applyDetailRequestCoverage(v *noteDetailView, loadAll bool, config xiaohong
 	if v.Coverage == nil {
 		return
 	}
+	if !loadAll && config.SkipComments {
+		v.Coverage.Comments = commentCoverage{Mode: "not_requested", RepliesScope: "not_requested"}
+		return
+	}
 	v.Coverage.Comments.Mode = "first_screen"
 	v.Coverage.Comments.RequestedLimit = 0
 	v.Coverage.Comments.RepliesExpansionRequested = false

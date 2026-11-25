@@ -49,6 +49,7 @@ type FeedDetailConfig struct {
 
 	// 批量请求按并发轮数分配此等待时间，只影响首屏评论的等待。
 	FirstCommentsTimeout time.Duration `json:"-"`
+	SkipComments         bool          `json:"-"`
 }
 
 // 未显式指定时的默认值。
@@ -142,6 +143,7 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 	config = config.normalize()
 
 	page := f.page.Context(ctx).Timeout(FeedDetailTimeout(loadAllComments))
+	defer page.CancelTimeout()
 
 	// 详情数据全部取自 __INITIAL_STATE__，图片和视频只是渲染出来给人看的，
 	// 对调用方无用却很吃内存；视频一播 DOM 还会永远静不下来。拦掉两头都赚。
@@ -152,6 +154,8 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
 
 	var initial *FeedDetailResponse
+	started := time.Now()
+	includeComments := loadAllComments || !config.SkipComments
 	// 页面导航可重试，首屏就绪时立即保存正文。
 	err := retry.Do(
 		func() error {
@@ -169,7 +173,7 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 			// （日志里必现 "DOM 未在 15s 内稳定"），而详情数据全部取自 __INITIAL_STATE__，
 			// 跟 DOM 静不静止毫无关系。改成直接等 noteDetailMap 落地，图文和视频都不再空耗。
 			var readyErr error
-			initial, readyErr = waitInitialDetail(page, feedID)
+			initial, readyErr = waitInitialDetail(page, feedID, includeComments)
 			if readyErr != nil {
 				logrus.Warnf("未取得首屏正文，稍后再次尝试: %v", readyErr)
 			}
@@ -193,6 +197,7 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 	}
 
 	var commentsLoadWarning string
+	commentStart := time.Now()
 	firstPageReady := !loadAllComments && initial != nil && initial.Comments.FirstRequestFinish != nil && *initial.Comments.FirstRequestFinish
 	if loadAllComments {
 		humanize.Delay(ctx, humanize.AfterNavigate)
@@ -201,7 +206,7 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 			commentsLoadWarning = "评论加载中断，已返回可用正文和已加载评论，评论覆盖可能不完整"
 		}
 	} else {
-		if !firstPageReady {
+		if includeComments && !firstPageReady {
 			if err := waitFirstComments(page, feedID, config.FirstCommentsTimeout); err != nil {
 				commentsLoadWarning = "首屏评论未确认加载完成，已返回可用正文和已加载评论"
 			}
@@ -216,8 +221,9 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 		return nil, err
 	}
 
+	commentsDone := time.Now()
 	var resp *FeedDetailResponse
-	if firstPageReady {
+	if firstPageReady || (!includeComments && initial != nil) {
 		resp = initial
 	} else if !loadAllComments && initial != nil {
 		// 渲染进程可能在等待评论时停止响应。保留已经取得的正文，只做一次限时刷新。
@@ -226,13 +232,13 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 			// 已经等过评论，页面正常时一次刷新只需几十毫秒。
 			refreshTimeout = time.Second
 		}
-		resp, err = readFeedDetail(page.Timeout(refreshTimeout), feedID)
+		resp, err = readFeedDetail(page.Timeout(refreshTimeout), feedID, true)
 		if err != nil {
 			resp = initial
 			commentsLoadWarning = "评论刷新未完成，已返回首次读取的正文和评论"
 		}
 	} else {
-		resp, err = f.extractFeedDetail(page, feedID)
+		resp, err = f.extractFeedDetail(page, feedID, includeComments)
 		if err != nil {
 			return nil, err
 		}
@@ -244,6 +250,7 @@ func (f *FeedDetailAction) getFeedDetailFromURL(ctx context.Context, feedID, url
 	fillSubtitleText(ctx, resp.Note.Video)
 
 	applyImagePolicy(&resp.Note, config.IncludeImages)
+	logrus.Infof("详情读取耗时: 导航及首读=%s 评论及停留=%s 最终读取及字幕=%s", navigated.Sub(started), commentsDone.Sub(commentStart), time.Since(commentsDone))
 
 	return resp, nil
 }
@@ -1144,13 +1151,13 @@ func checkPageAccessible(page *rod.Page) error {
 const extractEvalTimeout = 3 * time.Second
 
 // waitInitialDetail 在目标笔记可读时直接取回快照，避免把正文的成功依赖于稍后的评论请求。
-func waitInitialDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
+func waitInitialDetail(page *rod.Page, feedID string, includeComments bool) (*FeedDetailResponse, error) {
 	ctx, cancel := context.WithTimeout(page.GetContext(), 15*time.Second)
 	defer cancel()
 	var detail *FeedDetailResponse
 	err := utils.Retry(ctx, rod.DefaultSleeper(), func() (bool, error) {
 		var err error
-		detail, err = readFeedDetail(page.Context(ctx), feedID)
+		detail, err = readFeedDetail(page.Context(ctx), feedID, includeComments)
 		if err == errors.ErrNoFeedDetail {
 			return false, nil
 		}
@@ -1159,14 +1166,14 @@ func waitInitialDetail(page *rod.Page, feedID string) (*FeedDetailResponse, erro
 	return detail, err
 }
 
-func readFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
-	res, err := page.Eval(`(id) => {
+func readFeedDetail(page *rod.Page, feedID string, includeComments bool) (*FeedDetailResponse, error) {
+	res, err := page.Eval(`(id, includeComments) => {
 		const entry = window.__INITIAL_STATE__?.note?.noteDetailMap?.[id];
 		if (!entry?.note) return "";
 		if (entry.note.noteId && entry.note.noteId !== id) return "";
 		if (!entry.note.noteId && !entry.note.title && !entry.note.desc && !entry.note.type) return "";
-		return JSON.stringify({note: entry.note, comments: entry.comments});
-	}`, feedID)
+		return JSON.stringify({note: entry.note, comments: includeComments ? entry.comments : undefined});
+	}`, feedID, includeComments)
 	if err != nil {
 		return nil, err
 	}
@@ -1182,11 +1189,11 @@ func readFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) 
 	return &detail, nil
 }
 
-func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*FeedDetailResponse, error) {
+func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string, includeComments bool) (*FeedDetailResponse, error) {
 	var detail *FeedDetailResponse
 	err := retry.Do(func() error {
 		var err error
-		detail, err = readFeedDetail(page.Timeout(extractEvalTimeout), feedID)
+		detail, err = readFeedDetail(page.Timeout(extractEvalTimeout), feedID, includeComments)
 		return err
 	}, retry.Context(page.GetContext()), retry.Attempts(3), retry.Delay(200*time.Millisecond), retry.MaxJitter(300*time.Millisecond))
 

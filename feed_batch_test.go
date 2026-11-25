@@ -145,6 +145,9 @@ func TestToolStringListSchemas(t *testing.T) {
 
 	require.NotNil(t, schemas["get_feed_details"])
 	assert.Contains(t, schemas["get_feed_details"].Properties, "include_images")
+	require.NotNil(t, schemas["get_feed_details"].Properties["skip_comments"])
+	assert.Equal(t, "boolean", schemas["get_feed_details"].Properties["skip_comments"].Type)
+	assert.NotContains(t, schemas["get_feed_details"].Required, "skip_comments")
 	wantFields := map[string]map[string]bool{
 		"get_feed_details":   {"refs": true},
 		"publish_content":    {"images": true, "tags": false, "products": false},

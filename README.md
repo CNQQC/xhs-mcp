@@ -1108,6 +1108,7 @@ npx mcporter list xiaohongshu-mcp
   - 只占一个浏览器名额，在同一个浏览器里并发开 2 个标签页抓取，一次返回全部结果；
     比逐条调 `get_feed_detail` 省掉了每条都要起一次浏览器的开销，也少了模型来回的轮次
   - 每条内容与 `get_feed_detail` 默认返回一致（首屏已加载评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
+  - 只筛正文时可传 `"skip_comments": true`：不等待或读取评论列表，保留正文、互动计数、图片选项与字幕。`coverage.comments.mode` 为 `not_requested`，不代表笔记没有评论
   - 单条失败在该条给出兼容的 `error` 和结构化 `error_info`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
   - `include_images`: 是否连每张图的尺寸与地址一起返回（可选），默认 false
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：content，以及 ref 或 feed_id+xsec_token）

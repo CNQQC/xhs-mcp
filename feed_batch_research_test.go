@@ -84,3 +84,25 @@ func TestBatchResearchInvalidFetchResults(t *testing.T) {
 		})
 	}
 }
+
+func TestBatchOptionalCommentCoverage(t *testing.T) {
+	server := &AppServer{refs: newRefTable()}
+	ref := server.refs.put(refTarget{FeedID: "note", XsecToken: "tok"})
+	for _, skip := range []bool{false, true} {
+		result := server.handleGetFeedDetailsWithFetch(context.Background(), FeedDetailsArgs{Refs: []string{ref}, SkipComments: skip}, func(_ context.Context, _ []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
+			require.Equal(t, skip, config.SkipComments)
+			return []feedDetailResult{{detail: &xiaohongshu.FeedDetailResponse{Note: xiaohongshu.FeedDetail{Title: "body", InteractInfo: xiaohongshu.InteractInfo{CommentCount: "9"}}}}}
+		})
+		var view noteBatchView
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].Text), &view))
+		note := view.Notes[0]
+		require.Equal(t, "9", note.Comments)
+		require.Equal(t, "body", note.Title)
+		if skip {
+			require.Equal(t, "not_requested", note.Coverage.Comments.Mode)
+			require.Nil(t, note.Coverage.Comments.TopLevelComplete)
+		} else {
+			require.Equal(t, "first_screen", note.Coverage.Comments.Mode)
+		}
+	}
+}

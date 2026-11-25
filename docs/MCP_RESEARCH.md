@@ -32,7 +32,7 @@
 
 1. 搜索得到标题、作者、互动数、稳定 ID 和 ref
 2. 按相关性挑选最多六个 ref，用 `get_feed_details` 批量取正文
-3. 批量只取首屏评论；相同笔记 ID 与令牌的重复项只抓一次，仍按输入顺序返回全部项
+3. 批量默认取首屏评论；只筛正文时传 `skip_comments: true` 跳过评论（`not_requested` 不等于零条评论）。相同笔记 ID 与令牌的重复项只抓一次，仍按输入顺序返回全部项
 4. 根据 `coverage` 与 `warnings` 决定是否对单条调用 `get_feed_detail`，显式设置 `load_all_comments`、`limit`、`click_more_replies`、`reply_limit`
 5. 图片地址仅在 `include_images=true` 时返回；要实际看图，按需调用 `get_feed_image`
 

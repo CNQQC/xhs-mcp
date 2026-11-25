@@ -389,7 +389,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_details",
-			Description: "批量获取多条小红书笔记详情，一次最多6条，并发抓取、一次返回，比逐条调用 get_feed_detail 更快。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、首屏已加载的评论），返回的 notes 与 refs 一一对应（顺序相同、ref 原样带回）；单条失败时保留 ref、原始 error 文本及结构化 error_info（code、retryable、next_action、request_id），不影响其余。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
+			Description: "批量获取多条小红书笔记详情，一次最多6条，并发抓取、一次返回，比逐条调用 get_feed_detail 更快。传 search_feeds / list_feeds 返回的 ref 列表即可。每条内容与 get_feed_detail 默认返回一致（正文、作者、时间、互动数据、视频字幕、首屏已加载的评论），返回的 notes 与 refs 一一对应（顺序相同、ref 原样带回）；单条失败时保留 ref、原始 error 文本及结构化 error_info（code、retryable、next_action、request_id），不影响其余。只筛笔记内容时可传 skip_comments=true，不等待或返回评论列表；默认仍取首屏评论。需要加载更多评论时，对单条用 get_feed_detail 并设 load_all_comments=true。",
 			InputSchema: nullableStringArrayToolSchema[FeedDetailsArgs](),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Details (Batch)",

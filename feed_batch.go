@@ -33,6 +33,7 @@ const (
 type FeedDetailsArgs struct {
 	Refs          []string `json:"refs" jsonschema:"笔记 ref 列表，取自 search_feeds / list_feeds / user_profile 返回的 ref，一次最多6条"`
 	IncludeImages bool     `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回，默认false只给张数"`
+	SkipComments  bool     `json:"skip_comments,omitempty" jsonschema:"只需笔记内容时设为true，不等待或返回评论列表；默认false仍读取首屏评论"`
 }
 
 // feedDetailResult 批量里的一条，err 非空即这条失败。
@@ -43,7 +44,12 @@ type feedDetailResult struct {
 
 // GetFeedDetails 批量获取详情，结果与 targets 一一对应。只取首屏评论，不滚动加载。
 func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
+	started := time.Now()
 	b := newBrowser(ctx)
+	browserReady := time.Now()
+	defer func() {
+		logrus.Infof("批量详情耗时: 笔记=%d 浏览器排队及启动=%s 总计=%s 跳过评论=%t", len(targets), browserReady.Sub(started), time.Since(started), config.SkipComments)
+	}()
 	defer b.Close()
 	// 名额占用上限：最坏每轮都卡满单页超时，另留 1 分钟收尾
 	rounds := (len(targets) + feedBatchConcurrency - 1) / feedBatchConcurrency
@@ -178,6 +184,7 @@ func (s *AppServer) handleGetFeedDetailsWithFetch(ctx context.Context, args Feed
 	if len(targets) > 0 {
 		config := xiaohongshu.DefaultFeedDetailConfig()
 		config.IncludeImages = args.IncludeImages
+		config.SkipComments = args.SkipComments
 		results := fetch(ctx, targets, config)
 		for j, target := range targets {
 			r := feedDetailResult{err: fmt.Errorf("内部错误: 批量详情未返回结果")}
