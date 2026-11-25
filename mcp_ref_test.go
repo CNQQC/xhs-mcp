@@ -91,6 +91,35 @@ func TestRefEviction(t *testing.T) {
 	assert.True(t, ok, "刚登记的绝不能被丢掉——模型引用的就是它")
 }
 
+func TestRefOrderAfterExpiryAndChurn(t *testing.T) {
+	refs := newRefTable()
+	oldest := refs.put(refTarget{})
+	middle := refs.put(refTarget{})
+	newest := refs.put(refTarget{})
+	for _, ref := range []string{oldest, middle} {
+		entry := refs.items[ref]
+		entry.expiresAt = time.Now().Add(-time.Second)
+		refs.items[ref] = entry
+	}
+	_, ok := refs.lookup(middle)
+	require.False(t, ok)
+	refs.put(refTarget{})
+	require.Equal(t, 2, refs.order.Len())
+	require.Equal(t, newest, refs.order.Front().Value)
+	var retained string
+	for index := range 3 * refMaxEntries {
+		ref := refs.put(refTarget{FeedID: "live"})
+		if index == 2*refMaxEntries {
+			retained = ref
+		}
+	}
+	require.Len(t, refs.items, refMaxEntries)
+	require.Equal(t, refMaxEntries, refs.order.Len())
+	require.Equal(t, retained, refs.order.Front().Value)
+	_, ok = refs.lookup(newest)
+	require.False(t, ok)
+}
+
 // TestResolveFallback 没走 ref 的老路要一直留着：REST 侧只有原始句柄，
 // 模型也可能从通知列表那种地方直接拿到 id 和 token。
 func TestResolveFallback(t *testing.T) {

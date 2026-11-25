@@ -4,6 +4,7 @@ package xiaohongshu
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -16,8 +17,12 @@ import (
 // These fixtures run in Chromium without contacting Xiaohongshu or loading cookies.
 func newCommentScrollPage(t *testing.T) *rod.Page {
 	t.Helper()
-	bin, err := browser.EnsureBrowser()
-	require.NoError(t, err)
+	bin := os.Getenv("XHS_FIXTURE_CHROME")
+	if bin == "" {
+		var err error
+		bin, err = browser.EnsureBrowser()
+		require.NoError(t, err)
+	}
 	l := launcher.New().Bin(bin).Headless(true)
 	b := rod.New().ControlURL(l.MustLaunch()).MustConnect()
 	t.Cleanup(func() {
@@ -91,6 +96,18 @@ func TestCommentScrollContext(t *testing.T) {
 		cancelled, cancelledPage, DefaultFeedDetailConfig()), context.Canceled)
 }
 
+func TestCheckPageAccessible(t *testing.T) {
+	page := newCommentScrollPage(t)
+	page.MustSetDocumentContent(`<div class="note-container">available note</div>`)
+	start := time.Now()
+	require.NoError(t, checkPageAccessible(page))
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"a page without an error wrapper must be checked without waiting")
+
+	page.MustSetDocumentContent(`<div class="access-wrapper">该笔记已被删除</div>`)
+	require.ErrorContains(t, checkPageAccessible(page), "该笔记已被删除")
+}
+
 func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	page := newCommentScrollPage(t)
 	page.MustSetDocumentContent(`<div class="note-scroller" style="height:500px;overflow:auto">
@@ -104,10 +121,77 @@ func TestCommentScrollFailurePreservesDetail(t *testing.T) {
 	require.NotPanics(t, func() {
 		require.NoError(t, action.loadAllCommentsWithConfig(page.GetContext(), page, DefaultFeedDetailConfig()))
 	})
-	detail, err := action.extractFeedDetail(page, "fixture")
+	detail, err := action.extractFeedDetail(page, "fixture", true)
 	require.NoError(t, err)
 	require.Equal(t, "available body", detail.Note.Desc)
 	require.Len(t, detail.Comments.List, 1)
 	require.Equal(t, "available comment", detail.Comments.List[0].Content)
 	require.True(t, detail.Comments.HasMore, "incomplete comments must not be marked as fully loaded")
+}
+
+// newHungPage 载入 html 后让主线程死循环：渲染进程不再回 Runtime/DOM/Input 调用，
+// 模拟线上卡死的详情页。页面 deadline 给足，测到的耗时才是单次调用的预算，而不是 deadline。
+func newHungPage(t *testing.T, html string) *rod.Page {
+	t.Helper()
+	page := newCommentScrollPage(t)
+	page.MustSetDocumentContent(html)
+	page.MustEval(`() => { setTimeout(() => { for (;;) {} }, 100) }`)
+	time.Sleep(300 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	return page.Context(ctx)
+}
+
+func TestExtractFeedDetailHungRenderer(t *testing.T) {
+	page := newHungPage(t, `<script>window.__INITIAL_STATE__ = {note: {noteDetailMap: {fixture: {
+		note: {noteId: "fixture", title: "available note"}
+	}}}};</script>`)
+
+	start := time.Now()
+	var err error
+	require.NotPanics(t, func() {
+		_, err = NewFeedDetailAction(page).extractFeedDetail(page, "fixture", true)
+	})
+	elapsed := time.Since(start)
+	t.Logf("extract failed after %s: %v", elapsed, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 12*time.Second,
+		"a hung renderer must fail within the extract budget, not the page deadline")
+}
+
+const hungCommentsHTML = `<div class="note-scroller" style="height:500px;overflow:auto">
+	<div style="height:3000px"></div>
+	<div class="comments-container"><div class="parent-comment">loaded comment</div></div>
+</div>`
+
+func TestHumanScrollHungRenderer(t *testing.T) {
+	page := newHungPage(t, hungCommentsHTML)
+
+	start := time.Now()
+	var err error
+	require.NotPanics(t, func() {
+		_, _, _, err = humanScroll(page.GetContext(), page, "normal", true, finalSprintPushCount)
+	})
+	elapsed := time.Since(start)
+	t.Logf("humanScroll failed after %s: %v", elapsed, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 15*time.Second,
+		"a hung renderer must stop the scroll after the first unread position, not at the page deadline")
+}
+
+func TestLoadAllCommentsHungRenderer(t *testing.T) {
+	page := newHungPage(t, hungCommentsHTML)
+
+	start := time.Now()
+	var err error
+	require.NotPanics(t, func() {
+		// 与线上一致：请求 ctx 本身不带 deadline，限时只在 page 上
+		err = NewFeedDetailAction(page).loadAllCommentsWithConfig(context.Background(), page, DefaultFeedDetailConfig())
+	})
+	elapsed := time.Since(start)
+	t.Logf("load comments failed after %s: %v", elapsed, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 90*time.Second,
+		"a hung renderer must end comment loading within the per-call budgets, not the page deadline")
 }

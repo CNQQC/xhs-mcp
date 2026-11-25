@@ -24,13 +24,13 @@ func TestBatchResearchPartialSuccessAndDedup(t *testing.T) {
 	entry.expiresAt = expiry
 	s.refs.items[a] = entry
 	calls := 0
-	result := s.handleGetFeedDetailsWithFetch(context.Background(), FeedDetailsArgs{Refs: []string{a, "expired", b, duplicate}},
+	result := s.handleGetFeedDetailsWithFetch(context.Background(), FeedDetailsArgs{Refs: []string{a, "expired", b, duplicate, a}},
 		func(ctx context.Context, targets []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
 			calls++
 			require.Len(t, targets, 2)
 			assert.Equal(t, target, targets[0])
 			return []feedDetailResult{
-				{detail: &xiaohongshu.FeedDetailResponse{Note: xiaohongshu.FeedDetail{Title: "success"}}},
+				{detail: &xiaohongshu.FeedDetailResponse{Note: xiaohongshu.FeedDetail{Title: "success"}, Comments: xiaohongshu.CommentList{List: []xiaohongshu.Comment{{ID: "comment", UserInfo: xiaohongshu.User{UserID: "author"}}}}}},
 				{err: context.DeadlineExceeded},
 			}
 		})
@@ -38,7 +38,7 @@ func TestBatchResearchPartialSuccessAndDedup(t *testing.T) {
 	assert.Equal(t, 1, calls)
 	var view noteBatchView
 	require.NoError(t, json.Unmarshal([]byte(result.Content[0].Text), &view))
-	assert.Equal(t, 4, view.Count)
+	assert.Equal(t, 5, view.Count)
 	assert.Equal(t, 2, view.Failed)
 	assert.Equal(t, []string{a, "expired", b, duplicate}, []string{view.Notes[0].Ref, view.Notes[1].Ref, view.Notes[2].Ref, view.Notes[3].Ref})
 	assert.Equal(t, "success", view.Notes[3].Title)
@@ -51,6 +51,16 @@ func TestBatchResearchPartialSuccessAndDedup(t *testing.T) {
 	actualExpiry, err := time.Parse(time.RFC3339Nano, view.Notes[0].RefExpiresAt)
 	require.NoError(t, err)
 	assert.WithinDuration(t, expiry, actualExpiry, time.Second)
+	for position, ref := range map[int]string{0: a, 3: duplicate, 4: a} {
+		note := view.Notes[position]
+		require.Len(t, note.CommentList, 1)
+		assert.Equal(t, ref, note.Ref)
+		assert.Equal(t, s.refs.expiresAt(ref), note.RefExpiresAt)
+		assert.Equal(t, view.Notes[0].CommentList[0].Ref, note.CommentList[0].Ref)
+	}
+	comment, ok := s.refs.lookup(view.Notes[0].CommentList[0].Ref)
+	require.True(t, ok)
+	assert.Equal(t, refTarget{FeedID: target.FeedID, XsecToken: target.XsecToken, UserID: "author", CommentID: "comment"}, comment)
 }
 
 func TestBatchResearchInvalidFetchResults(t *testing.T) {
@@ -72,5 +82,27 @@ func TestBatchResearchInvalidFetchResults(t *testing.T) {
 			assert.Equal(t, 1, view.Failed)
 			assert.NotEmpty(t, view.Notes[0].Error)
 		})
+	}
+}
+
+func TestBatchOptionalCommentCoverage(t *testing.T) {
+	server := &AppServer{refs: newRefTable()}
+	ref := server.refs.put(refTarget{FeedID: "note", XsecToken: "tok"})
+	for _, skip := range []bool{false, true} {
+		result := server.handleGetFeedDetailsWithFetch(context.Background(), FeedDetailsArgs{Refs: []string{ref}, SkipComments: skip}, func(_ context.Context, _ []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
+			require.Equal(t, skip, config.SkipComments)
+			return []feedDetailResult{{detail: &xiaohongshu.FeedDetailResponse{Note: xiaohongshu.FeedDetail{Title: "body", InteractInfo: xiaohongshu.InteractInfo{CommentCount: "9"}}}}}
+		})
+		var view noteBatchView
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].Text), &view))
+		note := view.Notes[0]
+		require.Equal(t, "9", note.Comments)
+		require.Equal(t, "body", note.Title)
+		if skip {
+			require.Equal(t, "not_requested", note.Coverage.Comments.Mode)
+			require.Nil(t, note.Coverage.Comments.TopLevelComplete)
+		} else {
+			require.Equal(t, "first_screen", note.Coverage.Comments.Mode)
+		}
 	}
 }

@@ -33,6 +33,7 @@ const (
 type FeedDetailsArgs struct {
 	Refs          []string `json:"refs" jsonschema:"笔记 ref 列表，取自 search_feeds / list_feeds / user_profile 返回的 ref，一次最多6条"`
 	IncludeImages bool     `json:"include_images,omitempty" jsonschema:"是否连每张图的尺寸与地址一起返回，默认false只给张数"`
+	SkipComments  bool     `json:"skip_comments,omitempty" jsonschema:"只需笔记内容时设为true，不等待或返回评论列表；默认false仍读取首屏评论"`
 }
 
 // feedDetailResult 批量里的一条，err 非空即这条失败。
@@ -43,13 +44,26 @@ type feedDetailResult struct {
 
 // GetFeedDetails 批量获取详情，结果与 targets 一一对应。只取首屏评论，不滚动加载。
 func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTarget, config xiaohongshu.FeedDetailConfig) []feedDetailResult {
+	started := time.Now()
 	b := newBrowser(ctx)
+	browserReady := time.Now()
+	concurrency := feedBatchConcurrency
+	if config.SkipComments {
+		concurrency = contentBatchConcurrency()
+	}
+	defer func() {
+		logrus.Infof("批量详情耗时: 笔记=%d 标签页上限=%d 浏览器排队及启动=%s 总计=%s 跳过评论=%t", len(targets), concurrency, browserReady.Sub(started), time.Since(started), config.SkipComments)
+	}()
 	defer b.Close()
 	// 名额占用上限：最坏每轮都卡满单页超时，另留 1 分钟收尾
-	rounds := (len(targets) + feedBatchConcurrency - 1) / feedBatchConcurrency
+	rounds := (len(targets) + concurrency - 1) / concurrency
+	// 多轮共用一次首屏评论等待预算，给导航、提取正文和返回结果留出时间。
+	if !config.SkipComments && rounds > 1 {
+		config.FirstCommentsTimeout = xiaohongshu.DefaultFeedDetailConfig().FirstCommentsTimeout / time.Duration(rounds)
+	}
 	b.limitHold(time.Duration(rounds)*xiaohongshu.FeedDetailTimeout(false) + time.Minute)
 
-	return fetchConcurrently(ctx, len(targets), feedBatchConcurrency,
+	return fetchConcurrently(ctx, len(targets), concurrency,
 		func(ctx context.Context, i int) (*xiaohongshu.FeedDetailResponse, error) {
 			page := b.NewPage()
 			// 关页必须限时（closePage）。批量里更要紧：rod 的 Page.Close 持有整个浏览器的
@@ -174,6 +188,7 @@ func (s *AppServer) handleGetFeedDetailsWithFetch(ctx context.Context, args Feed
 	if len(targets) > 0 {
 		config := xiaohongshu.DefaultFeedDetailConfig()
 		config.IncludeImages = args.IncludeImages
+		config.SkipComments = args.SkipComments
 		results := fetch(ctx, targets, config)
 		for j, target := range targets {
 			r := feedDetailResult{err: fmt.Errorf("内部错误: 批量详情未返回结果")}
@@ -183,14 +198,22 @@ func (s *AppServer) handleGetFeedDetailsWithFetch(ctx context.Context, args Feed
 			if r.err == nil && r.detail == nil {
 				r.err = fmt.Errorf("内部错误: 批量详情返回空结果")
 			}
-			for _, i := range positions[j] {
-				if r.err != nil {
+			if r.err != nil {
+				for _, i := range positions[j] {
 					setFailure(i, target, r.err, r.err.Error())
-					continue
 				}
-				view := toNoteDetailViewWithRef(s.refs, target.FeedID, target.XsecToken, r.detail, args.Refs[i])
-				applyDetailRequestCoverage(&view, false, config)
-				notes[i] = noteBatchItem{noteDetailView: view}
+				continue
+			}
+			firstRef := args.Refs[positions[j][0]]
+			view := toNoteDetailViewWithRef(s.refs, target.FeedID, target.XsecToken, r.detail, firstRef)
+			applyDetailRequestCoverage(&view, false, config)
+			for _, i := range positions[j] {
+				item := view
+				if args.Refs[i] != firstRef {
+					item.Ref = args.Refs[i]
+					item.RefExpiresAt = s.refs.expiresAt(item.Ref)
+				}
+				notes[i] = noteBatchItem{noteDetailView: item}
 			}
 		}
 	}

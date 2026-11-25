@@ -3,6 +3,7 @@ package xiaohongshu
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -15,52 +16,65 @@ type FeedsListAction struct {
 }
 
 func NewFeedsListAction(page *rod.Page) *FeedsListAction {
-	pp := page.Timeout(60 * time.Second)
-
-	pp.MustNavigate("https://www.xiaohongshu.com")
-	softWaitDOMStable(pp, "首页笔记列表")
-
-	return &FeedsListAction{page: pp}
+	return &FeedsListAction{page: page}
 }
 
 // GetFeedsList 获取页面的 Feed 列表数据
 func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
-	// 重设超时：.Context(ctx) 会替换掉构造函数里 Timeout(60s) 的 deadline
-	page := f.page.Context(ctx).Timeout(60 * time.Second)
+	return f.getFeedsListAt(ctx, "https://www.xiaohongshu.com", 16*time.Second)
+}
 
-	readFeeds := func() string {
-		return page.MustEval(`() => {
-			if (window.__INITIAL_STATE__ &&
-			    window.__INITIAL_STATE__.feed &&
-			    window.__INITIAL_STATE__.feed.feeds) {
-				const feeds = window.__INITIAL_STATE__.feed.feeds;
-				const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
-				if (feedsData) {
-					return JSON.stringify(feedsData);
-				}
-			}
-			return "";
-		}`).String()
+func (f *FeedsListAction) getFeedsListAt(ctx context.Context, url string, budget time.Duration) ([]Feed, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-
-	// 轮询等 __INITIAL_STATE__.feed 注水就绪（替代固定 1s，治偶发 ErrNoFeeds）
-	var result string
-	deadline := time.Now().Add(8 * time.Second)
+	page := f.page.Context(ctx).Timeout(60 * time.Second)
+	defer page.CancelTimeout()
+	defer blockHeavyResources(page)()
+	if err := page.Navigate(url); err != nil {
+		return nil, err
+	}
+	read := page.Timeout(budget)
+	defer read.CancelTimeout()
+	poll := time.NewTicker(300 * time.Millisecond)
+	defer poll.Stop()
+	var empty bool
 	for {
-		if result = readFeeds(); result != "" || time.Now().After(deadline) {
+		res, err := read.Eval(`() => {
+			const feeds = window.__INITIAL_STATE__?.feed?.feeds;
+			const data = feeds?.value !== undefined ? feeds.value : feeds?._value;
+			return Array.isArray(data) ? JSON.stringify(data) : "";
+		}`)
+		if err != nil {
+			if !stderrors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			break
 		}
-		time.Sleep(300 * time.Millisecond)
+		result := res.Value.Str()
+		empty = result == "[]"
+		if result != "" && !empty {
+			var feeds []Feed
+			if err := json.Unmarshal([]byte(result), &feeds); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
+			}
+			return onlyNotes(feeds), nil
+		}
+		select {
+		case <-poll.C:
+			continue
+		case <-read.GetContext().Done():
+		}
+		break
 	}
-
-	if result == "" {
-		return nil, errors.ErrNoFeeds
+	if err := page.GetContext().Err(); err != nil {
+		return nil, err
 	}
-
-	var feeds []Feed
-	if err := json.Unmarshal([]byte(result), &feeds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
+	if err := checkRiskVerification(page); err != nil {
+		return nil, err
 	}
-
-	return onlyNotes(feeds), nil
+	if empty {
+		return []Feed{}, nil
+	}
+	return nil, errors.ErrNoFeeds
 }

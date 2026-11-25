@@ -26,6 +26,8 @@ Copyright 2026 CNQQC
     docs/API.md
     errors/errors.go
     handlers_api.go
+    humanize/delay.go
+    humanize/humanize_test.go
     login_session.go
     login_session_test.go
     mcp_handlers.go

@@ -62,6 +62,6 @@ func diagnosticsSnapshot() map[string]any {
 		"uptime_seconds": int64(time.Since(processStartedAt).Seconds()),
 		"browser_status": "not_checked",
 		"login_status":   "not_checked",
-		"limits":         map[string]any{"batch_max": feedBatchMax, "batch_concurrency": feedBatchConcurrency, "ref_ttl_seconds": int64(refTTL.Seconds())},
+		"limits":         map[string]any{"batch_max": feedBatchMax, "batch_concurrency": feedBatchConcurrency, "batch_content_concurrency": contentBatchConcurrency(), "ref_ttl_seconds": int64(refTTL.Seconds())},
 	}
 }

@@ -154,6 +154,13 @@ net/http 一请求一 goroutine——**两个请求撞上就是两套完整 Chro
 MCP `get_feed_detail` 的笔记、`commentList` 中的评论及各层 `replies` 均通过 `time`
 返回发布时间，格式为 `YYYY-MM-DD HH:mm`（北京时间，UTC+8）；日期缺失时省略该字段。
 
+### 7. 详情页去掉两段白等
+
+- `checkPageAccessible` 原先 sleep 500ms 后用 `Element` 找错误容器。`Element` 会一直轮询到
+  2 秒超时，正常页面没有错误容器，**每次成功的调用都白等 2.5 秒**。改为 `Has` 只查一次。
+- 导航后的拟人停留（中位约 1.5 秒）原先排在等首屏评论（约 6 秒）之前，两者叠加。改为
+  `humanize.DelaySince`：停留从页面就绪起算，与等评论重叠，只补不足的部分。
+
 ### 效果汇总
 
 同一条视频笔记、同一个关键词，补丁全部部署后的对照：
@@ -1101,6 +1108,8 @@ npx mcporter list xiaohongshu-mcp
   - 只占一个浏览器名额，在同一个浏览器里并发开 2 个标签页抓取，一次返回全部结果；
     比逐条调 `get_feed_detail` 省掉了每条都要起一次浏览器的开销，也少了模型来回的轮次
   - 每条内容与 `get_feed_detail` 默认返回一致（首屏已加载评论），`notes` 与 `refs` 一一对应（顺序相同、ref 原样带回）
+  - 只筛正文时可传 `"skip_comments": true`：不等待或读取评论列表，保留正文、互动计数、图片选项与字幕。`coverage.comments.mode` 为 `not_requested`，不代表笔记没有评论
+  - 小内存 VPS 上，正文模式每批开始时检查一次资源余量。Linux 容器可见的 cgroup v2 限额不超过 1.5 核且不超过 1200 MiB、且容器剩余额度或系统可用内存低于 640 MiB 时，改用 1 个标签页；平时仍用 2 个。默认含评论模式不变。`get_diagnostics` 的 `limits.batch_content_concurrency` 是查询时的判断，实际采用值见该批次的耗时日志
   - 单条失败在该条给出兼容的 `error` 和结构化 `error_info`，不影响其余；需要加载更多评论时对单条用 `get_feed_detail`
   - `include_images`: 是否连每张图的尺寸与地址一起返回（可选），默认 false
 - `post_comment_to_feed` - 发表评论到小红书帖子（必需：content，以及 ref 或 feed_id+xsec_token）
