@@ -213,7 +213,12 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	var resp *FeedDetailResponse
 	if !loadAllComments && initial != nil {
 		// 渲染进程可能在等待评论时停止响应。保留已经取得的正文，只做一次限时刷新。
-		resp, err = readFeedDetail(page.Timeout(extractEvalTimeout), feedID)
+		refreshTimeout := extractEvalTimeout
+		if commentsLoadWarning != "" {
+			// 已经等过评论，页面正常时一次刷新只需几十毫秒。
+			refreshTimeout = time.Second
+		}
+		resp, err = readFeedDetail(page.Timeout(refreshTimeout), feedID)
 		if err != nil {
 			resp = initial
 			commentsLoadWarning = "评论刷新未完成，已返回首次读取的正文和评论"
