@@ -47,19 +47,23 @@ func (s *XiaohongshuService) GetFeedDetails(ctx context.Context, targets []refTa
 	started := time.Now()
 	b := newBrowser(ctx)
 	browserReady := time.Now()
+	concurrency := feedBatchConcurrency
+	if config.SkipComments {
+		concurrency = contentBatchConcurrency()
+	}
 	defer func() {
-		logrus.Infof("批量详情耗时: 笔记=%d 浏览器排队及启动=%s 总计=%s 跳过评论=%t", len(targets), browserReady.Sub(started), time.Since(started), config.SkipComments)
+		logrus.Infof("批量详情耗时: 笔记=%d 标签页上限=%d 浏览器排队及启动=%s 总计=%s 跳过评论=%t", len(targets), concurrency, browserReady.Sub(started), time.Since(started), config.SkipComments)
 	}()
 	defer b.Close()
 	// 名额占用上限：最坏每轮都卡满单页超时，另留 1 分钟收尾
-	rounds := (len(targets) + feedBatchConcurrency - 1) / feedBatchConcurrency
+	rounds := (len(targets) + concurrency - 1) / concurrency
 	// 多轮共用一次首屏评论等待预算，给导航、提取正文和返回结果留出时间。
-	if rounds > 1 {
+	if !config.SkipComments && rounds > 1 {
 		config.FirstCommentsTimeout = xiaohongshu.DefaultFeedDetailConfig().FirstCommentsTimeout / time.Duration(rounds)
 	}
 	b.limitHold(time.Duration(rounds)*xiaohongshu.FeedDetailTimeout(false) + time.Minute)
 
-	return fetchConcurrently(ctx, len(targets), feedBatchConcurrency,
+	return fetchConcurrently(ctx, len(targets), concurrency,
 		func(ctx context.Context, i int) (*xiaohongshu.FeedDetailResponse, error) {
 			page := b.NewPage()
 			// 关页必须限时（closePage）。批量里更要紧：rod 的 Page.Close 持有整个浏览器的
